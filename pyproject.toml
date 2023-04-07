@@ -1,0 +1,41 @@
+[build-system]
+# setuptools version required for project configured entirely with pyproject.toml
+requires = ["setuptools>=61.0.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name="valconfig"
+authors = [
+    {name = "Alexandre René", email = "alex.c.rene@gmail.com"},
+]
+description = "Extending Pydantic for configuration files."
+requires-python = ">=3.8"
+keywords = ["config", "configuration", "validation", "hierarchical",
+            "scientific computing", "reproducibility"]
+license = {text = "MPL 2.0"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "pydantic"
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+docs = ["sphinx", "myst-parser", "sphinx-book-theme", "sphinx-design"]
+test = ["pytest"]
+
+[tool.setuptools_scm]
+write_to = "valconfig/_version.py"
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]

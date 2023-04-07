@@ -1,0 +1,21 @@
+# general things to ignore
+build/
+dist/
+*.egg-info/
+*.egg
+*.py[cod]
+__pycache__/
+*.so
+*~
+.mypy_cache
+
+# due to using tox and pytest
+.tox
+.cache
+.pytest_cache
+
+# sphinx
+_build
+
+# setuptools_scm
+_version.py
