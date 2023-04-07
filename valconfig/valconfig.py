@@ -3,34 +3,30 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 """
-Utilities for creating project config objects
+A base classe for project config objects
 
 For a package called `MyPackage`, the following files should be defined:
 
-    MyPackage/MyPackage/config.py
-    MyPackage/.project-defaults.cfg
+    MyPackage/MyPackage/config/__init__.py
+    MyPackage/MyPackage/config/defaults.cfg
+    MyPackage/local-config.cfg
 
-Within MyPackage/config.py, one then does something like
+Within MyPackage/MyPackage/config/__init__.py, one then does something like
 
     from pathlib import Path
-    from pydantic import BaseModel
-    from mackelab_toolbox.config import ValConfig
+    from valconfig import ValConfig
 
     class Config(ValConfig):
-        class PATH(BaseModel):
-            <path param name 1>: <type 1>
-            <path param name 2>: <type 2>
+        class paths:
+            <path param name 1>: Path
+            <path param name 2>: Path
             ...
-        class RUN(BaseModel):
+        class run:
             <run param name 1>: <type 1>
             <run param name 2>: <type 2>
             ...
 
-    root = Path(__file__).parent.parent
-    config = Config(
-        path_user_config   =root/"project.cfg",
-        path_default_config=root/".project-default.cfg",
-        package_name       ="MyPackage")
+    config = Config()
 
 (c) Alexandre René 2022-2023
 https://github.com/alcrene/valconfig
@@ -66,8 +62,8 @@ class ValConfigMeta(ModelMetaclass):
           would cause conflicts, no annotation is added.
     """
     def __new__(metacls, cls, bases, namespace):
-        # Use ValConfig annotations as default. That way users don't need to remember to type `package_name: str = "MyProject"`
-        # However, in order not to lose the default if the user *didn't* assign to that attribute,
+        # Use ValConfig annotations as default.
+        # However, in order not to lose a default if the user *didn't* assign to that attribute,
         # we only use annotation defaults for values which are also in `namespace`.
         default_annotations = {} if cls  == "ValConfig" \
                                  else ValConfig.__annotations__
@@ -229,15 +225,6 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
 
         config = Config(Path(__file__)/".project-defaults.cfg" 
     """
-    # rootdir: Path
-
-    # package_name: ClassVar[str]
-    # default_config_file: ClassVar[Union[str,Path]]
-    # ensure_user_config_exists: ClassVar[bool]=False  # Set to True to add a template config file when none is found
-
-    #path_default_config: Path="config/.project-defaults.cfg"  # Rel path => prepended with rootdir
-    #path_user_config: Path="../project.cfg"  # Rel path => prepended with rootdir
-    # user_config_filename: ClassVar[str]="project.cfg"  # Searched for, starting from CWD
 
     ## Config class options ##
     # Class options use dunder names to avoid conflicts
@@ -358,12 +345,17 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             self.validate_dict(kwargs)
             return
 
-        elif kwargs:
-            # We have NOT yet initialized, but are passing keyword arguments:
-            # this may happen because of __new__ returning an existing instance,
-            # in which case this __init__ gets executed twice
-            # We flush this list after we initialize
-            self.__valconfig_deferred_init_kwargs__.append(kwargs)
+        # elif kwargs:
+        #     # We have NOT yet initialized, but are passing keyword arguments:
+        #     # this may happen because of __new__ returning an existing instance,
+        #     # in which case this __init__ gets executed twice
+
+        #     # We flush this list after we initialize
+        #     valconfig_deferred_init_kwargs__.append(kwargs)
+
+        #     import pdb; pdb.set_trace()
+        #     self.__init__()
+        #     self.validate_dict(kwargs)
 
         else:
             # Normal path: Initialize with the config files
@@ -375,10 +367,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                 # Make config_path relative to configdir, and convert to Path
                 type(self).__default_config_path__ = configdir / self.__default_config_path__
                 # This will use super().__init__ because __valconfig_initialized__ is still False
-                self.validate_cfg_file(self.__default_config_path__)
+                self.validate_cfg_file(self.__default_config_path__, **kwargs)
             else:
                 # If there is no config file, then all defaults must be defined in Config definition
-                super().__init__()
+                super().__init__(**kwargs)
 
             # Mark as initialized, so we don't take this branch twice
             # Also, this ensures that further config files use setattr() instead of __init__ to set fields
@@ -400,7 +392,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                     wdfiles = set(os.listdir(wd))
                     if cfg_fname in wdfiles:
                         rootdir = wd
-                        cfg_paths.append(cwd/cfg_fname)
+                        cfg_paths.append(wd/cfg_fname)
                         # break
                     if ({".git", ".hg", ".svn"} & wdfiles
                           and not default_location_for_conf_filename):
@@ -424,12 +416,12 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                     logger.error(f"The provided current working directory ('{cwd}') "
                                  "is not part of a version controlled repository.")
 
-            ## Apply any deferred initialization kwargs ##
-            for kw in self.__valconfig_deferred_init_kwargs__:
-                self.validate_dict(kw)
-            self.__valconfig_deferred_init_kwargs__.clear()
+            # ## Apply any deferred initialization kwargs ##
+            # for kw in self.__valconfig_deferred_init_kwargs__:
+            #     self.validate_dict(kw)
+            # self.__valconfig_deferred_init_kwargs__.clear()
 
-    def validate_cfg_file(self, cfg_path: Path):
+    def validate_cfg_file(self, cfg_path: Path, **kwargs):
         if not cfg_path.exists():
             logger.error(f"Config file path does not exist: '{cfg_path}'")
         cfdict = self.read_cfg_file(cfg_path)
@@ -438,7 +430,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         # We set the current root so that relative paths are resolved based on
         # the location of their config file
         type(self).__valconfig_current_root__ = cfg_path.parent.absolute()
-        self.validate_dict(cfdict)
+        self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
         type(self).__valconfig_current_root__ = None
 
     def validate_dict(self, cfdict):
@@ -491,12 +483,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     ## Validators ##
 
     @validator("*")
-    def prepend_rootdir(cls, val, values):
+    def prepend_rootdir(cls, val):
         """Prepend any relative path with the current root directory."""
-        if isinstance(val, Path) and not val.is_absolute():
-            root = cls.__valconfig_current_root__
-            if root:
-                val = root/val
+        if isinstance(val, Path):
+            val = cls.resolve_path(val)
         return val
 
     @validator("*", pre=True)
@@ -521,6 +511,19 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             # KeyError: When `val` is not in the dictionary
             return val
 
+    # Validator utility
+    @classmethod
+    def resolve_path(cls, path: Path):
+        if isinstance(path, str):
+            path = Path(path)
+        else:
+            assert isinstance(path, Path), "`resolve_path` expects a Path or a str."
+        if not path.is_absolute():
+            root = cls.__valconfig_current_root__
+            if root:
+                path = root/path
+        return path
+
     ## User config template ##
 
     def add_user_config_if_missing(
@@ -533,8 +536,9 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
 
         Basic instructions are added as a comment to the top of the file.
         Their content is determined by the class variable `__top_message_default__`.
-        Two variables are available for substitution into this message:
-        `package_name` and `config_module_name`.
+        The message variable can contain `format` fields matching two names:
+        `package_name` and `config_module_name`. These are inferred from
+        self.__module__ and self.__file__ respectively.
 
         Parameters
         ----------
@@ -636,29 +640,33 @@ def _unflatten_dict(d: Mapping) -> defaultdict:
         v = d[k]
         subks = k.split('.')
         last_k = subks.pop()
+        _obj = obj
         for i, _k in enumerate(subks):
-            obj = obj[_k]
+            try:
+                _obj = _obj[_k]
+            except KeyError:  # We can end up here if `obj[_k]` already exists but is not a default dict
+                _obj[_k] = new_obj()
+                _obj = _obj[_k]
             assert isinstance(obj, Mapping), \
                 f"Configuration field '{'.'.join(subks[:i+1])}' should be a dictionary."
         # NB: Don't unflatten value dictionaries, otherwise we can't have configs
         #     like those in matplotlib: {'figure.size': 6}
-        obj[last_k] = v
+        _obj[last_k] = v
 
     return obj
 
 def recursively_validate(model: Union[BaseModel,ValConfig],
                          newvals: dict):
     for key, val in newvals.items():
+        # `newvals` may specify invalid fields – e.g. a DEFAULT section,
+        # or generic fields from a fallback field.
+        # If they don’t match a config field, ignore them.
+        if key not in model.__fields__:
+            continue
         # If `val` is a Mapping, we want to assign it recursively
         # if the field is a nested Config.
         if isinstance(val, Mapping):
-            try:
-                cur_val = getattr(model, key)
-            except AttributeError:
-                # `newvals` may specify invalid fields – e.g. a DEFAULT section,
-                # or generic fields from a fallback field.
-                # If they don’t match a config field, ignore them.
-                continue
+            cur_val = getattr(model, key, None)
             # Two ways to identify nested Config: has `validate_dict` method
             if hasattr(cur_val, "validate_dict"):
                 cur_val.validate_dict(val)

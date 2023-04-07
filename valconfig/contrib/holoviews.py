@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from configparser import ConfigParser
 
 from mackelab_toolbox.utils import Singleton
-from .validating_config import ValidatingConfigBase, prepend_rootdir  # prepend_rootdir is a workaround because assigning automatically doesn’t currently work
+from ..valconfig import ValConfig
 
 # HoloConfig
 from typing import Any, Dict, Tuple
@@ -189,10 +189,11 @@ def _replace_colors(value, colors):
     else:
         return value
 
-class HoloConfigBase(ValidatingConfigBase):
+class HoloConfigBase(ValConfig):
     _elem_names = {"Curve", "Scatter", "Overlay", "Layout", "Area"}
     _backend: ClassVar[str]
 
+    # NB: Resolving relative paths only works for config files
     colors: Union[Path, dict] = Path(__file__).parent/"paul_tol_colors.cfg"
     defaults: Dict[str, GenericParam]={}
 
@@ -227,13 +228,13 @@ class HoloConfigBase(ValidatingConfigBase):
         kwargs.update(cap_vals)
         super().__init__(**kwargs)
 
-    _prepend_rootdir = validator("colors", allow_reuse=True)(prepend_rootdir)
+    # _prepend_rootdir = validator("colors", allow_reuse=True)(prepend_rootdir)
 
     @validator("*", pre=True)
     def apply_generic_validators(cls, val, field):
         target_type = field.type_
         if ( not hasattr(target_type, "__get_validators__")  # Basic test
-             and any(s not in str(target_type)
+             and all(s not in str(target_type)
                      for s in ("Union", "Any", "[")) ):      # Exclude complex types
             try:
                 # Skip if value is already of desired type
@@ -279,6 +280,9 @@ class HoloConfigBase(ValidatingConfigBase):
     @validator("colors")
     def load_colors(cls, colors):
         if isinstance(colors, Path):
+            # NB: This validators runs before the `prepend_rootdir` from ValConfig,
+            #     so we need to resolve the path ourselves
+            colors = cls.resolve_path(colors)
             colorcfg = ConfigParser()
             with open(colors) as f:
                 colorcfg.read_file(f)
@@ -326,7 +330,7 @@ class HoloConfigBase(ValidatingConfigBase):
                 opts[elem].update(elem_opts)
         return opts
 
-class FiguresConfig(ValidatingConfigBase):
+class FiguresConfig(ValConfig):
 
     backend: Literal["matplotlib", "bokeh"]
     matplotlib: Optional[HoloConfig["matplotlib"]] = None

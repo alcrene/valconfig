@@ -245,6 +245,12 @@ When `Config` instantiates, it does the following:
  In our example, to find `local.cfg`, the project would need to be executed from
  within `BigProject` or one of its subdirectories.
 
+:::{hint} We can think of repositories as being used either as a “project” or
+a “library” – where library repositories are *imported* by projects. 
+Typically a user-local config file is useful for project repositories.
+:::
+
+
 [^multiple-local-configs]: In fact, the search up the directory tree continues
   until we hit the root directory. Then all the found config files are parsed
   in *reversed* order, and the `config` instance updated with each. This allows
