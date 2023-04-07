@@ -1,6 +1,6 @@
 # Validating config
 
-Simple, extensible configuration objects
+Simple, extendable configuration objects
 
 ## Quick start
 

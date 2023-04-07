@@ -117,7 +117,7 @@ n_units       = 3
 connectivites = [[.3, -.3,  .1],
                  [.1,  .1, -.2],
                  [.8,   0, -.2]]
-url           = example.com
+url           = http://example.com
 ```
 
 The path to this file is specified by defining the class variable `__default_config_path__`. When this variable is undefined or `None`,
