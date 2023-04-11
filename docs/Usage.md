@@ -138,9 +138,35 @@ of the package. For this we add an import to the root `__init__.py` file.
 from .config import config
 ```
 
-## User-specific local configuration
+## Updating config values
 
-## Hierarchical configuration / multiple files
+Because we make `Config` a singleton, the following are two completely equivalent
+ways of updating field values.
+
+::::{grid} 2
+
+:::{grid-item-card} By assignment
+```python
+# main.py
+from .config import config  # instance
+config.use_gpu = True
+```
+:::
+
+:::{grid-item-card} By keyword
+```python
+# main.py
+from .config import Config  # class
+Config(use_gpu=True)
+```
+::::
+
+The keyword form can be useful when updating values programmatically.
+That said, if you find yourself updating the config programmatically, consider
+whether it might not be better to move that logic to a [validator] method
+of the `Config`
+
+## User-specific local configuration
 
 In the example above, `data_source`, `use_gpu` and `log_name` are fields that
 may be user- or machine-specific. Suppose for example that two people, Jane
@@ -286,6 +312,14 @@ When a value, after validation, is an instance of {py:class}`~python:pathlib.Pat
   "~/my-projects/data/"
   ```
 
+## Hierarchical fields
+
+TODO: Side-by-side cards
+
+## Extending a configuration / Configuration templates
+
+TODO: Example: add a field to `contrib.FiguresConfig`
+
 ## Config class options
 
 The behaviour of a `ValConfig` subclass can be customized by setting class
@@ -298,9 +332,14 @@ variables. Three have already introduced: `__default_config_path__`,
   path is relative to *config/*)
 
 `__local_config_filename__`
-: Filename to search for local configuration.
-  If no file is found, and `__create_template_config__` is `True`, then a blank
-  config file with instructions is created at the root of the project repository.
+: Filename to search for local configuration. If `None`, no search is performed.
+  Typically this is set to `None` for library packages and a string value
+  for project packages: library packages are best configured by
+  modifying their `config` object (perhaps within a project’s own `config`),
+  than by using a local file.
+  If no file is found, and `__create_template_config__` is `True` (the default),
+  then a blank config file with instructions is created at the root of the project repository.
+  Default value is `None`. 
 
 `__value_substitutions__`
 : Dictionary of substitutions for plain text values.
@@ -309,10 +348,15 @@ variables. Three have already introduced: `__default_config_path__`,
   as a string.
 
 `__create_template_config__`
-: Set to `True` if you want a template config
-  file to be created in a standard location when no user config file is
-  found. Default is `False`. Typically this is set to `False` for utility
+: Whether a template config file should be created in a standard location when
+  no local config file is found. This has no effect when `__local_config_filename__`
+  is `None`.
+  The default is `True`, which is equivalent to letting `__local_config_filename__`
+  determine whether to create a template config. In almost all cases this default
+  should suffice.
+  Typically this is set to `False` for utility
   packages, and `True` for project packages.
+
 
 `__interpolation__`
 : Passed as argument to {py:class}`~python:configparser.ConfigParser`.
@@ -327,3 +371,66 @@ variables. Three have already introduced: `__default_config_path__`,
 `__top_message_default__`
 : The instruction message added to the top of a
   template config file when it is created.
+
+(validators)=
+## Advanced usage: adding logic with validators
+
+Since a `Config` class is a normal class, you can all the usual Python functionality
+to add arbitrary logic, like overriding `__init__` or adding computed fields
+via properties:
+
+```python
+from valconfig import ValConfig
+
+class Config(ValConfig):
+  data_source: Optional[Path]
+  log_name: Optional[str]
+  use_gpu: bool
+
+  def __init__(self, **kwds):
+    kwds["use_gpu"] = False   # Modify `kwds` before fields are assigned
+    super().__init__(**kwds)  # <-- Fields are assigned & validators are run here
+    self.use_gpu = False      # Modify fields after they have been assigned
+
+  @property
+  def log_header(self):
+    return f"{self.logname} ({self.data_source})"
+```
+
+However there should be little use in overriding `__init__`, since `ValConfig`
+provides *validators* which can be used to assign arbitrary logic to a field:
+
+```python
+import torch
+from pydantic import validator
+from valconfig import ValConfig
+
+class Config(ValConfig):
+  use_gpu: bool
+
+  @validator("use_gpu")
+  def check_gpu(cls, v):
+    if v and not torch.has_cuda:
+      print("Cannot use GPU: torch reports CUDA is not available.")
+      v = False
+    return v
+```
+
+By default, custom validators are run after a value has been cast to the
+prescribed type. To run a validator before type casting, add the `pre` keyword:
+
+```python
+from pathlib import Path
+from valconfig import ValConfig
+
+class Config(ValConfig):
+  data_source: Optional[Path]
+
+  @validator("data_source", pre=True):
+  def default_source(cls, src):
+    if src is None:
+      src = "../data"  # Because we use pre=True, we don’t need to cast to Path
+    return src
+  ```
+
+There is a lot more one can do with validators, as detailed in [Pydantic’s documentation](https://docs.pydantic.dev/usage/validators/).
