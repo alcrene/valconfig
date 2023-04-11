@@ -214,6 +214,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         file to be created in a standard location when no user config file is
         found. Default is `False`. Typically, this is set to `False` for utility
         packages, and `True` for project packages.
+        This option is ignored when `__local_config_filename__` is `None`.
     __interpolation__: Passed as argument to ConfigParser.
         Default is ExtendedInterpolation().
         (Note that, as with ConfigParser, an *instance* must be passed.)
@@ -231,7 +232,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     # __make_paths_absolute__  : ClassVar[bool]=True
     __default_config_path__   : ClassVar[Optional[Path]]=None
     __local_config_filename__ : ClassVar[Optional[str]]=None
-    __create_template_config__: ClassVar[bool] = False  # If True, a template config file is created when no local file is found. Required a default config set with __default_config_path__
+    __create_template_config__: ClassVar[bool] = True  # If True, a template config file is created when no local file is found. Requires a default config set with __default_config_path__
     __interpolation__         : ClassVar = ExtendedInterpolation()
     __empty_lines_in_values__  = False
     __top_message_default__: ClassVar = """
@@ -241,7 +242,14 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         # set flags (e.g. using GPU or not).
         # Default values are listed below; uncomment and edit as needed.
         #
-        # Adding a new config field is done by modifying the config module `{config_module_name}`.
+        # Note that this file was generated from a defaults file packaged with
+        # '{package_name}': it may not include all available options, although
+        # should include the most common ones. For a full list of options,
+        # refer to {package_name}’s documentation, or inspect the
+        # config module `{config_module_name}`.
+        #
+        # Adding a new config field is done by modifying the config module
+        # `{config_module_name}`, located at {config_module_path}.
         
         """
     __value_substitutions__   : ClassVar = {"<None>": None}
@@ -549,9 +557,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         """
         # Determine the dynamic fields for the info message added to the top
         # of the template config
-        package_name, _ = self.__module__.split(".", 1)
+        config_module_path = self.__file__
+        config_module_name = self.__module__
+        package_name, _    = self.__module__.split(".", 1)
             # If the ValConfig subclass is defined in ``mypkg.config.__init__.py``, this will return ``mypkg``.
-        config_module_name = self.__file__
 
         top_message = self.__top_message_default__
         # Remove any initial newlines from `top_message`
@@ -562,7 +571,8 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         # Finish formatting top message
         top_message = textwrap.dedent(
             top_message.format(package_name=package_name,
-                               config_module_name=config_module_name))
+                               config_module_name=config_module_name,
+                               config_module_path=config_module_path))
 
         if not Path(path_user_config).exists():
             # The user config file does not yet exist – create it, filling with
