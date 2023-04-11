@@ -9,6 +9,7 @@ authors = [
     {name = "Alexandre René", email = "alex.c.rene@gmail.com"},
 ]
 description = "Simple, extendable configuration files, using Pydantic for validation."
+readme = "README.md"
 requires-python = ">=3.8"
 keywords = ["config", "configuration", "validation", "hierarchical",
             "scientific computing", "reproducibility"]
@@ -16,12 +17,18 @@ license = {text = "MPL 2.0"}
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+    "Typing :: Typed"
 ]
 dependencies = [
     "pydantic"
@@ -31,6 +38,11 @@ dynamic = ["version"]
 [project.optional-dependencies]
 docs = ["sphinx", "myst-parser", "sphinx-book-theme", "sphinx-design"]
 test = ["pytest"]
+
+[project.urls]
+"Documentation" = "https://validating-config.readthedocs.io/"
+"Homepage" = "https://github.com/alcrene/valconfig"
+"Bug Tracker" = "https://github.com/alcrene/valconfig/issues"
 
 [tool.setuptools_scm]
 write_to = "valconfig/_version.py"
