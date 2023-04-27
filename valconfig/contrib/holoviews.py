@@ -1,10 +1,12 @@
 
 from pathlib import Path
-from typing import Optional, ClassVar, Union, Literal
-from collections.abc import Mapping
+from typing import Optional, ClassVar, Union, Literal, List
+from collections.abc import Mapping, Sequence
 from configparser import ConfigParser
 
-from mackelab_toolbox.utils import Singleton
+import matplotlib.pyplot as plt
+
+# from mackelab_toolbox.utils import Singleton
 from ..valconfig import ValConfig
 
 # HoloConfig
@@ -29,6 +31,12 @@ class GenericParam:
             if isinstance(v, str):
                 v = v.strip()
 
+                # If `v` is empty, the best we can do is guess an appropriate value
+                # Empty string and `None` are likely the most reasonable ones; we return None
+                # (Therefore to get an empty string, the value should be "")
+                if len(v) == 0:
+                    return None
+
                 # Check if v is a quoted string – either "…" or '…'
                 # CAUTION: This won't catch malformed expressions like ""a" – the returned value would be '"a'
                 if v.startswith('"') or v.endswith('"'):
@@ -51,8 +59,13 @@ class GenericParam:
                 if v.startswith("[") or v.endswith("]"):
                     if not v.startswith("[") and v.endswith("]"):
                         raise ValueError("Unclosed brackets")
-                    return list(cls.validate(item.strip())
-                                 for item in v[1:-1].split(","))
+                    # Special case: empty list
+                    if "," not in v and len(v[1:-1].strip() ) == 0:
+                        return []
+                    # Normal case
+                    else:
+                        return list(cls.validate(item.strip())
+                                     for item in v[1:-1].split(","))
 
                 # Check if v is a number:
                 if v[0] in set("0123456789"):
@@ -149,17 +162,17 @@ def generic_validate(target_type, value):
 #     class Config:
 #         extra = "allow"
 
-class _HoloConfigCreator(metaclass=Singleton):
-    def __init__(self):
-        self.config_types = {}
-    def __getitem__(self, backend):
-        try:
-            return self.config_types[backend]
-        except KeyError:
-            self.config_types[backend] = type(
-                f"HoloConfig[{backend}]", (HoloConfigBase,), {"_backend": backend})
-            return self.config_types[backend]
-HoloConfig = _HoloConfigCreator()
+# class _HoloConfigCreator(metaclass=Singleton):
+#     def __init__(self):
+#         self.config_types = {}
+#     def __getitem__(self, backend):
+#         try:
+#             return self.config_types[backend]
+#         except KeyError:
+#             self.config_types[backend] = type(
+#                 f"HoloConfig[{backend}]", (HoloConfigBase,), {"_backend": backend})
+#             return self.config_types[backend]
+# HoloConfig = _HoloConfigCreator()
 
 def make_addict(obj: Mapping) -> addict.Dict:
     d = addict.Dict(obj.items())
@@ -247,6 +260,12 @@ class HoloConfigBase(ValConfig):
                     val = generic_validate(target_type, val)
         return val
 
+    @validator("defaults", "Area", "Curve", "Layout", "Overlay", "Scatter")
+    def make_attribute_dict(cls, val, field):
+        if isinstance(val, dict):
+            val = make_addict(val)
+        return val
+
     # @validator("*", pre=True)
     # def parse_element_options(cls, opts, field):
     #     """Support passing multiple values as a dictionary
@@ -330,11 +349,49 @@ class HoloConfigBase(ValConfig):
                 opts[elem].update(elem_opts)
         return opts
 
+class HoloMPLConfig(HoloConfigBase):
+    """
+    Adds an `rcparams` field, which should be an argument compatible with :py:func:`pyplot.style.use()`.
+    These parameters are automatically set as defaults figure parameters:
+    whenever the field `rcparams` is changed, `plt.style.use()` is executed with the new value.
+    """
+    _backend = "matplotlib"
+    rcparams: Optional[Union[List[Union[str, Path]], Union[str,Path]]] = None
+
+    class Config:
+        validate_assignment: True  # Re-trigger plt.style.use when we assign to rcparams
+
+    @validator("rcparams", pre=True)
+    def path_or_str(cls, style_file):
+        """
+        Keep `style_file` as a string if it matches an entry in plt.style.available,
+        otherwise convert to a Path.
+        """
+        style_file = GenericParam.validate(style_file)  # `apply_generic_validators` is called after this validator, because it is assigned with "*"
+        if isinstance(style_file, str):
+            if style_file not in plt.style.available:
+                style_file = cls.resolve_path(style_file)
+            return style_file
+        elif isinstance(style_file, Sequence):
+            return [cls.path_or_str(name) for name in style_file]
+        else:
+            return style_file
+
+    @validator("rcparams")
+    def update_plot_style(cls, style_file):
+        if style_file:
+            plt.style.use(style_file)
+        return style_file
+
+
+class HoloBokehConfig(HoloConfigBase):
+    _backend = "bokeh"
+
 class FiguresConfig(ValConfig):
 
     backend: Literal["matplotlib", "bokeh"]
-    matplotlib: Optional[HoloConfig["matplotlib"]] = None
-    bokeh: Optional[HoloConfig["bokeh"]]           = None
+    matplotlib: Optional[HoloMPLConfig] = None
+    bokeh: Optional[HoloBokehConfig]    = None
 
     class Config:
         arbitrary_types_allowed = True
