@@ -36,7 +36,7 @@ import sys
 import logging
 from pathlib import Path
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Callable
 from typing import Optional, Union, ClassVar#, _UnionGenericAlias  >= 3.9
 from configparser import ConfigParser, ExtendedInterpolation
 from pydantic import BaseModel, validator
@@ -46,6 +46,12 @@ import textwrap
 logger = logging.getLogger(__name__)
 
 __all__ = ["ValConfig", "ensure_dir_exists"]
+
+def _prepend_rootdir(cls, val):
+    """Prepend any relative path with the current root directory."""
+    if isinstance(val, Path):
+        val = cls.resolve_path(val)
+    return val
 
 class ValConfigMeta(ModelMetaclass):
     """
@@ -117,8 +123,26 @@ class ValConfigMeta(ModelMetaclass):
             if new_nm != nm:  # Ensure we aren't overwriting the type
                 annotations[nm] = newT
 
+        # Create a `prepend_root` validator to any field which may be a Path
+        # (This test isn’t sophisticated: a field with type like `Tuple[Path,Path]`
+        # currently is not resolved, but would still be included.)
+        # There is no harm in applying prepend_root to extra fields, so in
+        # practice it is almost the same as using a "*" validator.
+        # Reason for not using a "*" validator: that gets executed after any
+        # custom validator, preventing validators from seeing the correct path.
+        # NOTE: Although I don’t anticipate it being useful, a subclass could override
+        # the prepend validator by defining its own `prepend_rootdir` method or attribute
+        path_fields = [nm for nm, ann in annotations.items()
+                       if "Path" in str(ann) and not "ClassVar" in str(ann)]
+        if path_fields:
+            validator_dict = {"prepend_rootdir": validator(*path_fields, allow_reuse=True)(_prepend_rootdir)}
+        else:
+            validator_dict = {}
+
         return super().__new__(metacls, cls, bases,
-                               {**new_namespace, **new_nested_classes,
+                               {**validator_dict,  # Place first so this validator has priority. Also, conceivably this allows a subclass to overwrite the validator
+                                **new_namespace,
+                                **new_nested_classes,
                                 '__annotations__': annotations,
                                 '__valconfig_initialized__': False})
 
@@ -486,16 +510,26 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             recursively_validate(self, cfdict)
         else:
             # We are initializing => Use __init__ to validate values
+            # First update the __current_root__ of any nested ValConfig classes
+            cur_roots = {name: field.type_.__valconfig_current_root__
+                         for name, field in self.__fields__.items()
+                         if hasattr(field.type_, "__valconfig_current_root__")}
+            for name in cur_roots:
+                self.__fields__[name].type_.__valconfig_current_root__ = self.__valconfig_current_root__
+            # Initialize values
             super().__init__(**cfdict)
+            # Reset __current_root__ of nested classes
+            for name, old_root in cur_roots.items():
+                self.__fields__[name].type_.__valconfig_current_root__ = old_root
 
     ## Validators ##
 
-    @validator("*")
-    def prepend_rootdir(cls, val):
-        """Prepend any relative path with the current root directory."""
-        if isinstance(val, Path):
-            val = cls.resolve_path(val)
-        return val
+    # @validator("*")
+    # def prepend_rootdir(cls, val):
+    #     """Prepend any relative path with the current root directory."""
+    #     if isinstance(val, Path):
+    #         val = cls.resolve_path(val)
+    #     return val
 
     @validator("*", pre=True)
     def reset_default(cls, val, field):
@@ -678,8 +712,20 @@ def recursively_validate(model: Union[BaseModel,ValConfig],
         if isinstance(val, Mapping):
             cur_val = getattr(model, key, None)
             # Two ways to identify nested Config: has `validate_dict` method
-            if hasattr(cur_val, "validate_dict"):
-                cur_val.validate_dict(val)
+            cur_val_validate_dict = getattr(cur_val, "validate_dict", None)
+            if isinstance(cur_val_validate_dict, Callable):  # If `cur_val` is a addict.Dict, accessing a non-existing attribute returns an empty dict
+                # Preliminary: Assign a value to __valconfig_current_root__, so paths can be resolved
+                if ( hasattr(type(cur_val), "__valconfig_current_root__")
+                     and hasattr(type(model), "__valconfig_current_root__") ):
+                    _old_root = cur_val.__valconfig_current_root__
+                    type(cur_val).__valconfig_current_root__ = type(model).__valconfig_current_root__
+                else:
+                    _old_root = "SENTINEL VALUE - NO __VALCONFIG_ROOT__"
+                # Actual validation
+                cur_val_validate_dict(val)
+                # Cleanup: Remove value to __valconfig_current_root__
+                if _old_root != "SENTINEL VALUE - NO __VALCONFIG_ROOT__":
+                    type(cur_val).__valconfig_current_root__ = _old_root
             # or is an instance of BaseModel
             elif isinstance(cur_val, BaseModel):
                 recursively_validate(cur_val, val)
