@@ -351,17 +351,17 @@ class HoloConfigBase(ValConfig):
 
 class HoloMPLConfig(HoloConfigBase):
     """
-    Adds an `rcparams` field, which should be an argument compatible with :py:func:`pyplot.style.use()`.
+    Adds a `style` field, which should be an argument compatible with :py:func:`pyplot.style.use()`.
     These parameters are automatically set as defaults figure parameters:
-    whenever the field `rcparams` is changed, `plt.style.use()` is executed with the new value.
+    whenever the field `style` is changed, `plt.style.use()` is executed with the new value.
     """
     _backend = "matplotlib"
-    rcparams: Optional[Union[List[Union[str, Path]], Union[str,Path]]] = None
+    style: Optional[Union[List[Union[str, Path]], Union[str,Path]]] = None
 
     class Config:
-        validate_assignment: True  # Re-trigger plt.style.use when we assign to rcparams
+        validate_assignment: True  # Re-trigger plt.style.use when we assign to `style`
 
-    @validator("rcparams", pre=True)
+    @validator("style", pre=True)
     def path_or_str(cls, style_file):
         """
         Keep `style_file` as a string if it matches an entry in plt.style.available,
@@ -377,7 +377,7 @@ class HoloMPLConfig(HoloConfigBase):
         else:
             return style_file
 
-    @validator("rcparams")
+    @validator("style")
     def update_plot_style(cls, style_file):
         if style_file:
             plt.style.use(style_file)
