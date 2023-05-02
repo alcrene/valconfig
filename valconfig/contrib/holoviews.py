@@ -260,7 +260,7 @@ class HoloConfigBase(ValConfig):
                     val = generic_validate(target_type, val)
         return val
 
-    @validator("defaults", "Area", "Curve", "Layout", "Overlay", "Scatter")
+    @validator("defaults", *_elem_names)
     def make_attribute_dict(cls, val, field):
         if isinstance(val, dict):
             val = make_addict(val)
