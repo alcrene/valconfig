@@ -420,12 +420,12 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                 default_location_for_conf_filename = None  # Will be set the first time we find a .git folder
                 cfg_paths = []
                
+                rootdir = None
                 for wd in [cwd, *cwd.parents]:
                     wdfiles = set(os.listdir(wd))
                     if cfg_fname in wdfiles:
                         rootdir = wd
                         cfg_paths.append(wd/cfg_fname)
-                        # break
                     if ({".git", ".hg", ".svn"} & wdfiles
                           and not default_location_for_conf_filename):
                         default_location_for_conf_filename = wd/cfg_fname
