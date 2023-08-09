@@ -39,8 +39,11 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Callable
 from typing import Optional, Union, ClassVar#, _UnionGenericAlias  >= 3.9
 from configparser import ConfigParser, ExtendedInterpolation
-from pydantic import BaseModel, validator
-from pydantic.main import ModelMetaclass
+try:
+    from pydantic.v1 import BaseModel, validator
+except ModuleNotFoundError:
+    from pydantic import BaseModel, validator
+# from pydantic.main import ModelMetaclass
 import textwrap
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ def _prepend_rootdir(cls, val):
         val = cls.resolve_path(val)
     return val
 
-class ValConfigMeta(ModelMetaclass):
+class ValConfigMeta(type(BaseModel)):
     """
     Some class magic with nested types:
     1. If a nested type is also used to declare a value or annotation, it is

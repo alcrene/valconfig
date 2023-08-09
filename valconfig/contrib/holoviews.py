@@ -11,7 +11,10 @@ from ..valconfig import ValConfig
 
 # HoloConfig
 from typing import Any, Dict, Tuple
-from pydantic import validator, root_validator #, StrictInt, StrictFloat, StrictBool
+try:
+    from pydantic.v1 import validator, root_validator #, StrictInt, StrictFloat, StrictBool
+except ModuleNotFoundError:
+    from pydantic import validator, root_validator #, StrictInt, StrictFloat, StrictBool
 import holoviews as hv
 import addict
 
@@ -19,7 +22,10 @@ import addict
 HoloParam = Union[int, float, bool,
                   Tuple[Union[int, float, bool], ...],
                   str]
-from pydantic.validators import int_validator, float_validator, bool_validator
+try:
+    from pydantic.v1.validators import int_validator, float_validator, bool_validator
+except ModuleNotFoundError:
+    from pydantic.validators import int_validator, float_validator, bool_validator
 class GenericParam:
 
     @classmethod

@@ -77,7 +77,7 @@ This adds two additional desiderata:
 - A mechanism to define simple lists of configuration options with *zero boilerplate*:
   just list the parameter names, their types, and optionally their default.
 - *Built-in validation* provided by [Pydantic](https://pydantic-docs.helpmanual.io/).
-- Additional validation for *scientific types* available with [scitying](https://scityping.readthedocs.io/).
+- Additional validation for *scientific types*, when used in conjunction with [scitying](https://scityping.readthedocs.io/).
 - An optional mechanism to autogenerate a file for users’ local configuration,
   with usage instructions embedded in the file.
 - The ability to *compose* configuration objects from multiple packages into a
@@ -134,7 +134,7 @@ Other features
 
 
 - Composable
-    + Want multiple config objects for each of your projects subpackage ?
+    + Want multiple config objects for each of your project’s subpackages ?
       Just import them.
     + Want to combine them into a single root config file ?
       Just import them.
@@ -155,14 +155,14 @@ Other features
 
       ```python
       from valconfig import ValConfig
-      from other_package import config as other_config
+      from other_package import config as OtherConfig
 
       class Config(ValConfig):
         # List the parameters you want to modify
         other_package_option1: int
         other_package_option2: float
         # Include the 3rd party config
-        other_package: other_config
+        other_package: OtherConfig
 
         @validator("other_package")
         def update_other_package_options(cls, other_config, values):
@@ -183,7 +183,8 @@ whether this use as abstract classes is needed.
 What’s wrong with the gazillion other config file projects out there ?
 Why not use one of those ?
 
-In short, because most of these packages were developed many years ago, before
+In short, because we can now do in 200 lines of code what used to take thousands.
+Most existing packages for config files were developed many years ago, before
 the standardization of type annotations. The can all perform the basic task of
 converting a file to a Python dictionary of strings, but fulfilling all of our
 aforementioned desiderata was difficult without creating a bloated package.
@@ -199,6 +200,8 @@ cases, which means that I found them all unsatisfactory in some respect:
 - For the examples I know which provides validation at the config level,
   the set of supported types is very limited and basically hard-coded. ([OmegaConf](https://omegaconf.readthedocs.io/en/latest/structured_config.html), [CFG API](https://docs.red-dove.com/cfg/python.html))
 - Some approaches even define their own file formats, substantially raising the barrier to adoption. ([CFG API](https://docs.red-dove.com/cfg/python.html))
+- The package [configobj](https://configobj.readthedocs.io/en/latest/index.html) seems to tick the most boxes: simple, declarative format. It is also mature, which unfortunately also means that it pre-dates widespread use of type annotations and therefore must package its own custom validation library. Things like configuring subpackages also don’t seem to be easily supported.
+  + On the other hand, *configobj* might make a great substitute to get around some of the limitations of the builtin `configparser` with regards to reading files.
 
 With the standardization of type annotations in Python 3.6–3.8, and the availability of classes like [Pydantic](https://pydantic-docs.helpmanual.io/)’s `BaseModel`, defining classes with validation
 logic has become a breeze, and converting a `BaseModel` into a full-featured
@@ -224,7 +227,7 @@ Pydantic itself is highly mature and actively maintained.
 > code, thus removing *valconfig* as package dependency and giving you
 > full control over the config object.
 
-Finally, *using ValConfig does not preclude from using another config parser*.
+Finally, *using ValConfig does not preclude from using another config file parser*.
 Indeed, the provided implementation uses `configparser` to parse files mostly
 because it is already installed part of the standard library. The execution flow
 is basically
@@ -232,5 +235,5 @@ is basically
 1. Read config file(s) with `configparser`.
 2. Validate with `Pydantic`.
 
-To use a different config parser, just subclass `ValConfig` and override the
+To use a different config file parser, just subclass `ValConfig` and override the
 the method `read_cfg_file()`.
