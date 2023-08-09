@@ -1,3 +1,7 @@
+# https://docs.pypi.org/trusted-publishers/using-a-publisher/
+# https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
+# https://stackoverflow.com/questions/62968271/python-automatic-versioning-not-happening-while-running-in-github-actions
+
 name: Build Python package
 run-name: ${{ github.actor }} is building the Python package
 
@@ -6,13 +10,17 @@ on:
   release:
     types: [released]
   workflow_dispatch:
+
 jobs:
+  
   build:
     name: Build Python package
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
