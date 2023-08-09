@@ -5,14 +5,15 @@
 name: Build Python package
 run-name: ${{ github.actor }} is building the Python package
 
-# Run job by triggering it manually with the web UI: https://docs.github.com/en/actions/using-workflows/manually-running-a-workflow#running-a-workflow
+# Workflow will when a new release in the GitHub web UI.
+# It can also be triggered manually: https://docs.github.com/en/actions/using-workflows/manually-running-a-workflow#running-a-workflow
 on:
   release:
     types: [released]
   workflow_dispatch:
 
 jobs:
-  
+
   build:
     name: Build Python package
     runs-on: ubuntu-latest
