@@ -47,10 +47,9 @@ which is a bit of an extreme case: On the one hand, scientists are not professio
 so the system needs to be so simple that it needs no documentation at all.
 On the other hand, they are also constantly developing new methods, and so
 also need to be able to add new configuration options and new variable types.
-Moreover, most users are also possible contributors. We therefore need to allow
-them to set local configuration options without breaking others’ config, and without
-requiring anything more complicated than an `git push`. (Local configuration
-may include whether to use a GPU, where to save data / figures, MPI flags, etc.)
+Moreover, most users of lab-scale projects are also possible contributors to those projects.
+**We therefore need to allow users to set local configuration options without breaking others’ config, and without requiring anything more complicated than an `git push`.**
+(Local configuration may include whether to use a GPU, where to save data/figures, MPI flags, etc.)
 
 Thus we needed a way to
 - Set version-controlled defaults, that are packaged with the repository.
@@ -63,9 +62,8 @@ In addition, projects often depend on other projects, so we need a way to set
 Finally, not all parameters are strings or simple numerical values. Some might need to
 be cast to NumPy arrays; others might need to be pre-processed, or checked for
 consistency with other parameters, or simply inferred from other parameters.
-These are all roles that conceptually belong in a configuration parser.
-As scientist programmers, we already have the bad habit of mixing up all their logic –
-let’s give ourselves one less reason to do so.
+These are all roles that conceptually belong in a configuration parser, not the core parts of our program.
+As scientist programmers, we already have the bad habit of mixing up our programming logic into a big ball of spaghetti – let’s give ourselves one less reason to do so.
 
 This adds two additional desiderata:
 
@@ -81,7 +79,7 @@ This adds two additional desiderata:
 - An optional mechanism to autogenerate a file for users’ local configuration,
   with usage instructions embedded in the file.
 - The ability to *compose* configuration objects from multiple packages into a
-  single main configuration – *even when those packages don’t use* ValidatingConfig.
+  single central configuration object – *even when those packages don’t use* ValidatingConfig. This ensures all packages have access to a single source of truth.
 - The ability to *extend* the functionality of a config object with all the
   functionality Python has to offer: read environment variables with `os.getenv`,
   get command line parameters with `sys.argv`, etc.
@@ -99,13 +97,13 @@ Other features
 - Define your own custom types with either *Pydantic* or *Scityping*. [^new-types]
 - *Pydantic* provides [validators](https://docs.pydantic.dev/usage/validators/) which can be used to add per-field
   validation and pre-processing. These are defined with plain Python,
-  not some minilanguage or a sanitized `eval`.
+  not a restricted minilanguage or a sanitized `eval`.
 - Use standard [properties](https://docs.python.org/3/library/functions.html?highlight=property#property) to define computed (inferred) values.
-- Use any file format
+- Use any file format.
     + The default uses stdlib’s `configparser`, but you can override the method
       used to read files.
 - Relative paths in config files are correctly resolved.
-- Automatically finds the local configuration file
+- Automatic discovery of the local configuration file.
     + Just set the class variable `__local_config_filename__`, and `ValConfig`
       will recurse up the directory tree until it finds a matching file.
     + This is especially convenient to accommodate multiple users who organize
@@ -200,8 +198,10 @@ cases, which means that I found them all unsatisfactory in some respect:
 - For the examples I know which provides validation at the config level,
   the set of supported types is very limited and basically hard-coded. ([OmegaConf](https://omegaconf.readthedocs.io/en/latest/structured_config.html), [CFG API](https://docs.red-dove.com/cfg/python.html))
 - Some approaches even define their own file formats, substantially raising the barrier to adoption. ([CFG API](https://docs.red-dove.com/cfg/python.html))
-- The package [configobj](https://configobj.readthedocs.io/en/latest/index.html) seems to tick the most boxes: simple, declarative format. It is also mature, which unfortunately also means that it pre-dates widespread use of type annotations and therefore must package its own custom validation library. Things like configuring subpackages also don’t seem to be easily supported.
+- The package [configobj](https://configobj.readthedocs.io/en/latest/index.html) is probably the most closely aligned with our goals: it provides a simple, declarative format for both parameter and types specification, as well as key features like hierarchical parameters. (But not, to my knowledge, the configuration of subpackages.) It is also mature, which unfortunately means that it pre-dates widespread use of validation libraries and therefore must package its own custom validation library.
   + On the other hand, *configobj* might make a great substitute to get around some of the limitations of the builtin `configparser` with regards to reading files.
+
+## A simple implementation
 
 With the standardization of type annotations in Python 3.6–3.8, and the availability of classes like [Pydantic](https://pydantic-docs.helpmanual.io/)’s `BaseModel`, defining classes with validation
 logic has become a breeze, and converting a `BaseModel` into a full-featured
