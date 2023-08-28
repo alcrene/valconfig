@@ -47,3 +47,6 @@ jobs:
         with:
           name: release-build
           path: dist/
+
+      - name: Display structure of created artifacts
+        run: ls -R
