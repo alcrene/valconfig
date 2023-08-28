@@ -41,7 +41,7 @@ test = ["pytest"]
 
 [project.urls]
 "Documentation" = "https://validating-config.readthedocs.io/"
-"Homepage" = "https://github.com/alcrene/valconfig"
+"Source" = "https://github.com/alcrene/valconfig"
 "Bug Tracker" = "https://github.com/alcrene/valconfig/issues"
 
 [tool.setuptools_scm]
