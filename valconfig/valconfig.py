@@ -39,6 +39,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Callable
 from typing import Optional, Union, ClassVar#, _UnionGenericAlias  >= 3.9
 from configparser import ConfigParser, ExtendedInterpolation
+from contextlib import contextmanager
 try:
     from pydantic.v1 import BaseModel, validator
 except ModuleNotFoundError:
@@ -55,6 +56,35 @@ def _prepend_rootdir(cls, val):
     if isinstance(val, Path):
         val = cls.resolve_path(val)
     return val
+
+@contextmanager
+def temp_setattr(obj, attr, value):
+    """
+    Temporarily set `obj.attr` to `value` iff `obj` already defines `attr`.
+    The value of `obj.attr` is reset when we exit the context.
+    """
+    if hasattr(obj, attr):
+        old_attr = getattr(obj, attr)
+        setattr(obj, attr, value)
+        try:
+            yield obj
+        finally:
+            setattr(obj, attr, old_attr)
+    else:
+        yield obj
+
+@contextmanager
+def temp_match_attr(obj, src, attr):
+    """
+    Temporarily set `obj.attr` to the value of `src.attr`, iff both `obj`
+    and `src` define `attr`.
+    The value of `obj.attr` is reset when we exit the context.
+    """
+    if hasattr(obj, attr) and hasattr(src, attr):
+        with temp_setattr(obj, attr, getattr(src, attr)) as newobj:
+            yield newobj
+    else:
+        yield obj
 
 class ValConfigMeta(type(BaseModel)):
     """
@@ -464,14 +494,23 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         # Validate as a normal dictionary
         # We set the current root so that relative paths are resolved based on
         # the location of their config file
-        type(self).__valconfig_current_root__ = cfg_path.parent.absolute()
-        self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
-        type(self).__valconfig_current_root__ = None
+        with temp_setattr(type(self), "__valconfig_current_root__", cfg_path.parent.absolute()):
+            self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
+
+        # type(self).__valconfig_current_root__ = cfg_path.parent.absolute()
+        # self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
+        # type(self).__valconfig_current_root__ = None
 
     def validate_dict(self, cfdict):
         """
         Note: This function relies on `validate_assignment = True`
         """
+
+        # There are two code paths into this function:
+        # - When updating an already initialized config
+        # - When validating a config file (validate_cfg_file)
+
+
         # Convert any dotted sections into dict hierarchies (and merge where appropriate)
         cfdict = _unflatten_dict(cfdict)
 
@@ -509,7 +548,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
 
         if self.__valconfig_initialized__:
             # Config has already been initialized => validate fields by setting them
-            # This relies on `validate_assignment = True`
+            # NOTE: This relies on `validate_assignment = True`
             recursively_validate(self, cfdict)
         else:
             # We are initializing => Use __init__ to validate values
@@ -559,6 +598,35 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     # Validator utility
     @classmethod
     def resolve_path(cls, path: Path):
+        """
+        There are many different contexts for a relative path specified in a
+        config file, each with a different "obvious" resolution.
+        This function considers the following situations:
+
+        - Absolute paths are never modified.
+        - Relative paths specified in a user-local config file should always be
+          relative to that config file.
+        - Relative *input* paths specified in a default config file should be
+          relative to that config file. For example, a matplotlib style file
+          might be packaged with the default config.
+        - Relative *output* paths specified in a default config file should be
+          relative to the *current directory*.
+          For example, a path for storing produced figures. This should definitely
+          not be relative to the default config file, which will likely be buried
+          under some external package (very possibly under a `site-packages` 
+          the user will never look into.)
+
+        We use two heuristics to differentiate between cases, which should be
+        reliable unless users intentionally break their assumptions:
+
+        - If the `root/path` concatenation exists => Assume an input path.
+          (Broken if a file or directory is added to this location manually.)
+        - SPECIAL CASE: If `path` is simply "." and the current root is the
+          default config => Always resolve relative to current directory,
+          independent of whether it is an input or output path.
+          (It would always exists, since the default config exists, but we
+          expect that most of the time this would be meant as an output path.)
+        """
         if isinstance(path, str):
             path = Path(path)
         else:
@@ -566,6 +634,18 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         if not path.is_absolute():
             root = cls.__valconfig_current_root__
             if root:
+                # NB: __valconfig_initialized__ is set to False exactly after we have
+                #     set any default values in the class itself or a default config file
+                if not cls.__valconfig_initialized__:
+                    if str(path) == "." or not (root/path).exists():
+                        root = os.getcwd()
+                # path_in_default_config = (root == cls.__default_config_path__.parent)
+                # if path_in_default_config and str(path) == ".": # Special case
+                #     output_path = True
+                # else:
+                #     output_path = not (root/path).exists()
+                # if path_in_default_config and output_path:
+                #     root = os.getcwd()
                 path = root/path
         return path
 
@@ -717,21 +797,24 @@ def recursively_validate(model: Union[BaseModel,ValConfig],
             # Two ways to identify nested Config: has `validate_dict` method
             cur_val_validate_dict = getattr(cur_val, "validate_dict", None)
             if isinstance(cur_val_validate_dict, Callable):  # If `cur_val` is a addict.Dict, accessing a non-existing attribute returns an empty dict
-                # Preliminary: Assign a value to __valconfig_current_root__, so paths can be resolved
-                if ( hasattr(type(cur_val), "__valconfig_current_root__")
-                     and hasattr(type(model), "__valconfig_current_root__") ):
-                    _old_root = cur_val.__valconfig_current_root__
-                    type(cur_val).__valconfig_current_root__ = type(model).__valconfig_current_root__
-                else:
-                    _old_root = "SENTINEL VALUE - NO __VALCONFIG_ROOT__"
-                # Actual validation
-                cur_val_validate_dict(val)
-                # Cleanup: Remove value to __valconfig_current_root__
-                if _old_root != "SENTINEL VALUE - NO __VALCONFIG_ROOT__":
-                    type(cur_val).__valconfig_current_root__ = _old_root
-            # or is an instance of BaseModel
+                with temp_match_attr(type(cur_val), type(model), "__valconfig_current_root__"):
+                    cur_val_validate_dict(val)
+                # # Preliminary: Assign a value to __valconfig_current_root__, so paths can be resolved
+                # if ( hasattr(type(cur_val), "__valconfig_current_root__")
+                #      and hasattr(type(model), "__valconfig_current_root__") ):
+                #     _old_root = cur_val.__valconfig_current_root__
+                #     type(cur_val).__valconfig_current_root__ = type(model).__valconfig_current_root__
+                # else:
+                #     _old_root = "SENTINEL VALUE - NO __VALCONFIG_ROOT__"
+                # # Actual validation
+                # cur_val_validate_dict(val)
+                # # Cleanup: Remove value to __valconfig_current_root__
+                # if _old_root != "SENTINEL VALUE - NO __VALCONFIG_ROOT__":
+                #     type(cur_val).__valconfig_current_root__ = _old_root
+            # or is an instance of BaseModel.
             elif isinstance(cur_val, BaseModel):
                 recursively_validate(cur_val, val)
+            # Anything else is treated as normal data.
             # Note that we don’t recursively validate plain dicts: it’s not unlikely one would want to replace them with the new value
             else:
                 setattr(model, key, val)

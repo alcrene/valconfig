@@ -1,3 +1,4 @@
+import sys
 import pytest
 from pathlib import Path
 import valconfig
@@ -19,7 +20,13 @@ def test_usage_example():
     assert config.log_name == "Jane"
     assert config.use_gpu == True
     # The data_source path in local.cfg is relative, so it is resolved relative
-    assert config.data_source == Path(__file__).parent/"shared-data/BigProject"
-    assert config.tmp_dir == Path("/tmp")
+    local_root = Path(__file__).parent
+    default_root = Path(sys.modules[config.__module__].__file__).parent
 
-test_usage_example()
+    assert config.data_source         == local_root/"shared-data/BigProject"
+    assert config.default_data_source == default_root/"wordlist.txt"
+    assert config.out_dir             == local_root/"output.dat"
+    assert config.err_dump_path       == local_root
+    assert config.tmp_dir             == Path("/tmp")
+
+#test_usage_example()
