@@ -196,11 +196,18 @@ def split_cycles(d: dict) -> dict:
     return d
 
 def _replace_colors(value, colors):
+    # NB: This function is called for all fields, not just colors, so it needs
+    #     to correctly ignore non-color values
     if isinstance(value, str) and value.startswith("colors."):
         c = colors
         for field in value.split(".")[1:]:
             c = c.get(field)
-        return c
+        # Check if color is a cycle
+        if isinstance(c, (list, tuple)):  # Color cycle
+            name = value[7:]  # Remove 'colors.'
+            return hv.Cycle(name, values=c)
+        else:
+            return c
     elif isinstance(value, dict):
         for k, v in value.items():
             value[k] = _replace_colors(v, colors)
