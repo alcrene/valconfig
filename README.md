@@ -31,7 +31,7 @@ class Config(ValConfig):
 config = Config()
 ```
 
-For more detailed usage, see the [documentation](https://valconfig.readthedocs.io/en/stable/usage.html).
+For more detailed usage, see the [documentation](https://validating-config.readthedocs.io/).
 
 ## Motivation
 
@@ -42,22 +42,23 @@ are pretty much always the same:
 - It should be easy to read.
 - It should be easy to extend.
 
-*Validating config* came about to fulfill these needs for scientific programming,
+*Validating config* came about to fulfill these needs for **scientific programming**,
 which is a bit of an extreme case: On the one hand, scientists are not professional programmers,
 so the system needs to be so simple that it needs no documentation at all.
 On the other hand, they are also constantly developing new methods, and so
 also need to be able to add new configuration options and new variable types.
-Moreover, most users of lab-scale projects are also possible contributors to those projects.
-**We therefore need to allow users to set local configuration options without breaking others’ config, and without requiring anything more complicated than an `git push`.**
-(Local configuration may include whether to use a GPU, where to save data/figures, MPI flags, etc.)
+Moreover, code is often shared (at least within a group) between users with different machines and different needs. A key use of config objects in a scientific context are specifying machine-local settings, like enabling the GPU, defining paths for data and figures, or defining MPI flags. 
 
 Thus we needed a way to
+
 - Set version-controlled defaults, that are packaged with the repository.
 - Make it easy to know what the configurable options are.
 - Make it easy to change those options, without touching the defaults.
 
+And we want to that with nothing more complicated than a `git push`.
+
 In addition, projects often depend on other projects, so we need a way to set
-*their* options as well.
+*their* options as well. Ideally all within the same configuration file.
 
 Finally, not all parameters are strings or simple numerical values. Some might need to
 be cast to NumPy arrays; others might need to be pre-processed, or checked for
@@ -67,7 +68,7 @@ As scientist programmers, we already have the bad habit of mixing up our program
 
 This adds two additional desiderata:
 
-- Support for composition: Have one configuration for multiple packages.
+- Support for composition: have one configuration for multiple packages.
 - Validation of values based on provided type information.
 
 ## What a *ValidatingConfig* provides
@@ -75,11 +76,12 @@ This adds two additional desiderata:
 - A mechanism to define simple lists of configuration options with *zero boilerplate*:
   just list the parameter names, their types, and optionally their default.
 - *Built-in validation* provided by [Pydantic](https://pydantic-docs.helpmanual.io/).
-- Additional validation for *scientific types*, when used in conjunction with [scitying](https://scityping.readthedocs.io/).
+- Additional validation for *scientific types*, when used in conjunction with [Scitying](https://scityping.readthedocs.io/).
+- The ability to *compose* configuration objects from multiple packages into a
+  single central configuration object – **even when those packages don’t use _ValidatingConfig_**. This ensures all packages have access to a single source of truth.
 - An optional mechanism to autogenerate a file for users’ local configuration,
   with usage instructions embedded in the file.
-- The ability to *compose* configuration objects from multiple packages into a
-  single central configuration object – *even when those packages don’t use* ValidatingConfig. This ensures all packages have access to a single source of truth.
+  + This is done by defining a class variable [`__local_config_filename__`](https://validating-config.readthedocs.io/en/latest/Usage.html#config-class-options) and mostly useful for project code. For library code it is usually best to keep this undefined.
 - The ability to *extend* the functionality of a config object with all the
   functionality Python has to offer: read environment variables with `os.getenv`,
   get command line parameters with `sys.argv`, etc.
@@ -90,14 +92,14 @@ This adds two additional desiderata:
 Other features
 
 - Zero onboarding:
-    + Uses only standard Python: No custom function calls, no boilerplate.
+    + *Validating config* uses only standard Python: No custom function calls, no boilerplate.
       If you know modern Python, you already know how to use this module.
     + Just define a `Config` class with the parameter names and their types.
     + Use the `Config` class as any other Python class.
-- Define your own custom types with either *Pydantic* or *Scityping*. [^new-types]
+- Define your own custom types with either *Pydantic* or *Scityping*.[^new-types]
 - *Pydantic* provides [validators](https://docs.pydantic.dev/usage/validators/) which can be used to add per-field
   validation and pre-processing. These are defined with plain Python,
-  not a restricted minilanguage or a sanitized `eval`.
+  not a restricted minilanguage or a sanitized `eval`.[^pydantic-v1]
 - Use standard [properties](https://docs.python.org/3/library/functions.html?highlight=property#property) to define computed (inferred) values.
 - Use any file format.
     + The default uses stdlib’s `configparser`, but you can override the method
@@ -175,6 +177,7 @@ a field of type `Model` which accepts any subclass of `Model`. (In plain
 Pydantic values are always *coerced* to the target type.) Whether it is best
 to define new types with either *Scityping* or *Pydantic* largely depends on
 whether this use as abstract classes is needed.
+[^pydantic-v1]: Currently validators need to be configured using the standards of Pydantic v1. Supporting Pydantic v2 validators is certainly something I would like to do eventually.
 
 ## In relation to other projects
 
