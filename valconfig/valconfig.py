@@ -435,7 +435,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                 self.validate_cfg_file(self.__default_config_path__, **kwargs)
             else:
                 # If there is no config file, then all defaults must be defined in Config definition
-                super().__init__(**kwargs)
+                # NB: validate_dict will detect that we are initializing and take care of calling __init__
+                #     It’s important not to call __init__ directly, because validate_dict takes care of setting _current_root__ of nested types
+                self.validate_dict(kwargs)
+                # super().__init__(**kwargs)
 
             # Mark as initialized, so we don't take this branch twice
             # Also, this ensures that further config files use setattr() instead of __init__ to set fields
