@@ -433,8 +433,26 @@ class FiguresConfig(ValConfig):
     class Config:
         arbitrary_types_allowed = True
 
+    @root_validator(pre=True)
+    def preload_backends(cls, values):
+        """
+        A number of Holoviews actions (like retrieving a color palette or
+        setting options) are only possible after a backend has been loaded.
+        By loading backends preemptively, we allow these actions to be done
+        within validators like GenericParam.validate
+        We do this in two separate steps: 
+        - In this pre-validator, we load the renderers with default options.
+        - In the post-validator below, once the values have been parsed,
+          we check if they contain arguments for the renderer and set them.
+        """
+        if "matplotlib" in values:
+            hv.renderer("matplotlib")
+        if "bokeh" in values:
+            hv.renderer("bokeh")
+        return values
+
     @root_validator
-    def load_backends(cls, values):
+    def set_renderer_args(cls, values):
         """By preemptively loading the backends, we ensure that e.g.
         ``hv.opts(*config.figures.bokeh)`` does not raise an exception.
         """
