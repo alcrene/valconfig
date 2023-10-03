@@ -1,4 +1,4 @@
-
+import re
 from pathlib import Path
 from typing import Optional, ClassVar, Union, Literal, List
 from collections.abc import Mapping, Sequence
@@ -33,6 +33,60 @@ class GenericParam:
         yield cls.validate
     @classmethod
     def validate(cls, v):
+        """Generic validator for config file values.
+
+        ConfigParser does not perform any validation: every value is read in as a
+        string. The idea of `GenericParam` is to provide a mechanism to allow
+        automatic validation of new types. Essentially we want to be able to write
+
+        .. code::python
+           class MyConfig(ValidatingConfig):
+             class figures:
+               cmap: holoviews.Palette
+               steps: range
+
+        and define the values in the config file as
+
+        .. code::
+           [figures]
+           cmap: "viridis"
+           steps: (1, 10, 2)
+
+        without having to specify custom validators for `Palette` or `range`.
+
+        This works by a combination of two features:
+
+        - Recognition of simple argument types.
+          A hard-coded list of simple argument types are recognized
+          by inspecting the values for characteristic markers. These are:
+          int, float, string, tuple, list and bool.
+          For example, a value starting with '(' is recognized as a tuple, a value
+          of `true` as a bool, etc.
+          If a value is not recognized, it is kept as a string and stripped
+          of initial and trailing whitespace.
+
+        - Once values have been converted to string to (number/tuple/etc.),
+          they are passed to type for initialization. So in the example above, this
+          would result in the following initialization calls:
+          ``holoviews.Palette("viridis")`` and ``range(1, 10, 2)``.
+
+        Adding the following code to your class will apply this function to all
+        types (or at least most) fields which don't have validators
+
+        .. code::
+            class MyConfig(ValidatingConfig):
+              class Config:
+                arbitrary_types_allowed = True
+
+              @validator("*", pre=True)
+              def apply_generic_validators(cls, val, field):
+                target_type = field.type_
+                if (not hasattr(target_type, "__get_validators__")  # Basic test
+                    and "Union" not in str(target_type)             # Exclude complex types
+                    and not isinstance(val, target_type)):          # Skip if value is already of desired type
+                  val = generic_validate(target_type, val)
+                return val
+        """
         try:
             if isinstance(v, str):
                 v = v.strip()
@@ -42,6 +96,30 @@ class GenericParam:
                 # (Therefore to get an empty string, the value should be "")
                 if len(v) == 0:
                     return None
+
+                # Check for special values
+                if v == "<None>":
+                    return None
+
+                # Match an expression like Palette("copper")
+                m = re.fullmatch(r"Palette\((['\"])([^\1]*)\1\)", v)
+                if m:
+                    try:
+                        pal = hv.Palette(m[2])
+                    except KeyError:  # Can happen if name is mistyped, or the required backend is not loaded.
+                        return v      # In particular, in headless operations where we won’t be plotting anything, 
+                    else:             # we might not load any backend so we don’t want to raise an exception
+                        return pal
+                    return hv.Palette(m[2])
+                # Match an expression like Cycle("copper")
+                m = re.fullmatch(r"Cycle\((['\"])([^\1]*)\1\)", v)
+                if m:
+                    try:
+                        cyc = hv.Cycle(m[2])
+                    except KeyError:  # Idem
+                        return v
+                    else:
+                        return cyc
 
                 # Check if v is a quoted string – either "…" or '…'
                 # CAUTION: This won't catch malformed expressions like ""a" – the returned value would be '"a'
@@ -107,60 +185,6 @@ class GenericParam:
 
 
 def generic_validate(target_type, value):
-    """Generic validator for config file values.
-
-    ConfigParser does not perform any validation: every value is read in as a
-    string. The idea of `GenericParam` is to provide a mechanism to allow
-    automatic validation of new types. Essentially we want to be able to write
-
-    .. code::python
-       class MyConfig(ValidatingConfig):
-         class figures:
-           cmap: holoviews.Palette
-           steps: range
-
-    and define the values in the config file as
-
-    .. code::
-       [figures]
-       cmap: "viridis"
-       steps: (1, 10, 2)
-
-    without having to specify custom validators for `Palette` or `range`.
-
-    This works by a combination of two features:
-
-    - Recognition of simple argument types.
-      A hard-coded list of simple argument types are recognized
-      by inspecting the values for characteristic markers. These are:
-      int, float, string, tuple, list and bool.
-      For example, a value starting with '(' is recognized as a tuple, a value
-      of `true` as a bool, etc.
-      If a value is not recognized, it is kept as a string and stripped
-      of initial and trailing whitespace.
-
-    - Once values have been converted to string to (number/tuple/etc.),
-      they are passed to type for initialization. So in the example above, this
-      would result in the following initialization calls:
-      ``holoviews.Palette("viridis")`` and ``range(1, 10, 2)``.
-
-    Adding the following code to your class will apply this function to all
-    types (or at least most) fields which don't have validators
-
-    .. code::
-        class MyConfig(ValidatingConfig):
-          class Config:
-            arbitrary_types_allowed = True
-
-          @validator("*", pre=True)
-          def apply_generic_validators(cls, val, field):
-            target_type = field.type_
-            if (not hasattr(target_type, "__get_validators__")  # Basic test
-                and "Union" not in str(target_type)             # Exclude complex types
-                and not isinstance(val, target_type)):          # Skip if value is already of desired type
-              val = generic_validate(target_type, val)
-            return val
-    """
     return target_type(GenericParam.validate(value))
 
 # class DictModel(BaseModel):
@@ -347,7 +371,7 @@ class HoloConfigBase(ValConfig):
             return val
 
     @property
-    def all_opts(self):
+    def all_element_opts(self):
         """Return all set opts, for all plot Elements, including defaults."""
         allowed_opts = hv.opts._element_keywords(self._backend, self._elem_names)
         opts = {}
@@ -435,7 +459,7 @@ class FiguresConfig(ValConfig):
         for backend in ["matplotlib", "bokeh"]:
             if backend in values and backend in hv.Store.renderers:  # If backend is not in `renderers`, than the best guess is that `load_backends` failed for that backend
                 hv.Store.set_current_backend(backend)  # Only to silence warnings
-                hv.opts.defaults(values[backend].all_opts)
+                hv.opts.defaults(values[backend].all_element_opts)
         hv.Store.set_current_backend(values.get("backend"))
         return values
 
