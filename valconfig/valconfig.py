@@ -281,7 +281,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
 
     Inside config/__init__.py, one would have:
 
-        config = Config(Path(__file__)/".project-defaults.cfg" 
+        config = Config(Path(__file__)/".defaults.cfg" 
     """
 
     ## Config class options ##
@@ -314,6 +314,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     # Internal vars
     __valconfig_current_root__: ClassVar[Optional[Path]]=None  # Set temporarily when validating config files, in order to resolve relative paths
     __valconfig_deferred_init_kwargs__: ClassVar[list]=[]
+    __valconfig_parsing_default__: ClassVar[bool] = False  # Set temporarily to True when parsing a defaults file (i.e. one packaged with the the code)
 
 
     def read_cfg_file(self, cfg_path: Path) -> dict:
@@ -371,9 +372,9 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         If the user-editable config file does not exist yet, an empty one
         with instructions is created, at the root directory of the version-
         controlled repository. If there are multiple nested repositories, the
-        outer one is used (logic: one might have a code repo outside a project
-        repo; this should go in the project repo). If no repository is found,
-        no template config file is created.
+        outer one is used (logic: one might have a code repo separate from
+        and imported by a project repo; this should go in the project repo).
+        If no repository is found, no template config file is created.
 
 
         See also `ValConfig.ensure_user_config_exists`.
@@ -432,7 +433,8 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
                 # Make config_path relative to configdir, and convert to Path
                 type(self).__default_config_path__ = configdir / self.__default_config_path__
                 # This will use super().__init__ because __valconfig_initialized__ is still False
-                self.validate_cfg_file(self.__default_config_path__, **kwargs)
+                with temp_setattr(type(self), "__valconfig_parsing_default__", True):
+                    self.validate_cfg_file(self.__default_config_path__, **kwargs)
             else:
                 # If there is no config file, then all defaults must be defined in Config definition
                 # NB: validate_dict will detect that we are initializing and take care of calling __init__
@@ -489,15 +491,16 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             #     self.validate_dict(kw)
             # self.__valconfig_deferred_init_kwargs__.clear()
 
-    def validate_cfg_file(self, cfg_path: Path, **kwargs):
-        if not cfg_path.exists():
-            logger.error(f"Config file path does not exist: '{cfg_path}'")
-        cfdict = self.read_cfg_file(cfg_path)
+    # We use weird arg name below to avoid clashing with kwargs
+    def validate_cfg_file(self, __valconfig_cfg_path__: Path, **kwargs):
+        if not __valconfig_cfg_path__.exists():
+            logger.error(f"Config file path does not exist: '{__valconfig_cfg_path__}'")
+        cfdict = self.read_cfg_file(__valconfig_cfg_path__)
 
         # Validate as a normal dictionary
         # We set the current root so that relative paths are resolved based on
         # the location of their config file
-        with temp_setattr(type(self), "__valconfig_current_root__", cfg_path.parent.absolute()):
+        with temp_setattr(type(self), "__valconfig_current_root__", __valconfig_cfg_path__.parent.absolute()):
             self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
 
         # type(self).__valconfig_current_root__ = cfg_path.parent.absolute()
@@ -507,6 +510,20 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     def validate_dict(self, cfdict):
         """
         Note: This function relies on `validate_assignment = True`
+
+        QoL feature: "one-level-up" as a default value
+            If there is no "pckg.colors" section, but there is a "colors" section,
+            use "colors" for "pckg.colors", if pckg expects that section.
+
+            This allows setting an option once, and all nested configs will
+            share the same value.
+
+        CONSEQUENCE: Settings at the top level will overwrite any settings with
+           the same name in nested settings. I’m not sure yet if this is a good
+           thing. In general it can be convenient, and it’s not hard to reset
+           options in nested configs if necessary, but it is somewhat unexpected
+           behaviour.
+
         """
 
         # There are two code paths into this function:
@@ -554,18 +571,23 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             # NOTE: This relies on `validate_assignment = True`
             recursively_validate(self, cfdict)
         else:
+            # TODO: Make & use a recursive version of temp_match_attr ?
             # We are initializing => Use __init__ to validate values
             # First update the __current_root__ of any nested ValConfig classes
-            cur_roots = {name: field.type_.__valconfig_current_root__
+            # Also set __initialized__ state back to False, so paths are resolved appropriately – see `resolve_path()`
+            cur_roots = {name: (field.type_.__valconfig_current_root__,
+                                field.type_.__valconfig_parsing_default__)
                          for name, field in self.__fields__.items()
                          if hasattr(field.type_, "__valconfig_current_root__")}
             for name in cur_roots:
                 self.__fields__[name].type_.__valconfig_current_root__ = self.__valconfig_current_root__
+                self.__fields__[name].type_.__valconfig_parsing_default__ = self.__valconfig_parsing_default__
             # Initialize values
             super().__init__(**cfdict)
             # Reset __current_root__ of nested classes
-            for name, old_root in cur_roots.items():
+            for name, (old_root, old_parsing) in cur_roots.items():
                 self.__fields__[name].type_.__valconfig_current_root__ = old_root
+                self.__fields__[name].type_.__valconfig_parsing_default_ = old_parsing
 
     ## Validators ##
 
@@ -602,7 +624,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
     @classmethod
     def resolve_path(cls, path: Path):
         """
-        There are many different contexts for a relative path specified in a
+        There are different contexts for a relative path specified in a
         config file, each with a different "obvious" resolution.
         This function considers the following situations:
 
@@ -639,7 +661,8 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
             if root:
                 # NB: __valconfig_initialized__ is set to False exactly after we have
                 #     set any default values in the class itself or a default config file
-                if not cls.__valconfig_initialized__:
+                # if not cls.__valconfig_initialized__:
+                if cls.__valconfig_parsing_default__:
                     if str(path) == "." or not (root/path).exists():
                         root = os.getcwd()
                 # path_in_default_config = (root == cls.__default_config_path__.parent)
