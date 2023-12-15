@@ -301,6 +301,9 @@ class HoloConfigBase(ValConfig):
     def make_attribute_dict(cls, val, field):
         if isinstance(val, dict):
             val = make_addict(val)
+        # All config objects should explicitely specify 'backend'.
+        # This avoids an issue where using the `.opts` method to further specify options unsets previous options
+        val["backend"] = val.get("backend", cls._backend)
         return val
 
     # @validator("*", pre=True)
