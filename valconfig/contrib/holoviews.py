@@ -448,9 +448,9 @@ class FiguresConfig(ValConfig):
         - In the post-validator below, once the values have been parsed,
           we check if they contain arguments for the renderer and set them.
         """
-        if "matplotlib" in values:
+        if values.get("matplotlib"):
             hv.renderer("matplotlib")
-        if "bokeh" in values:
+        if values.get("bokeh"):
             hv.renderer("bokeh")
         return values
 
@@ -459,14 +459,14 @@ class FiguresConfig(ValConfig):
         """By preemptively loading the backends, we ensure that e.g.
         ``hv.opts(*config.figures.bokeh)`` does not raise an exception.
         """
-        if "matplotlib" in values:
+        if values.get("matplotlib"):
             renderer = hv.renderer("matplotlib")
             render_args = values["matplotlib"].renderer
             if render_args:
                 for kw, val in render_args.items():
                     setattr(renderer, kw, val)
 
-        if "bokeh" in values:
+        if values.get("bokeh"):
             renderer = hv.renderer("bokeh")
             render_args = values["bokeh"].renderer
             if render_args:
@@ -478,7 +478,7 @@ class FiguresConfig(ValConfig):
     @root_validator
     def set_defaults(cls, values):
         for backend in ["matplotlib", "bokeh"]:
-            if backend in values and backend in hv.Store.renderers:  # If backend is not in `renderers`, than the best guess is that `load_backends` failed for that backend
+            if values.get(backend) and backend in hv.Store.renderers:  # If backend is not in `renderers`, than the best guess is that `load_backends` failed for that backend
                 hv.Store.set_current_backend(backend)  # Only to silence warnings
                 hv.opts.defaults(values[backend].all_element_opts)
         hv.Store.set_current_backend(values.get("backend"))
