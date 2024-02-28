@@ -311,6 +311,41 @@ When a value, after validation, is an instance of {py:class}`~python:pathlib.Pat
   ```
   "~/my-projects/data/"
   ```
+- For paths default in a defaults file, the logic is more delicate.
+  The gist is that input paths are relative to the default config file,
+  while output paths are relative to the *current directory*.
+  For details on how we differentiate between input and output path,
+  see "More on path resolution" below.
+
+:::{dropdown} More on path resolution
+There are different contexts for a relative path specified in a
+config file, each with a different "obvious" resolution.
+The path resolution logic is contained in the function `ValConfig.resolve_path`,
+which considers the following situations:
+
+- Absolute paths are never modified.
+- Relative paths specified in a user-local config file should always be
+  relative to that config file.
+- Relative *input* paths specified in a default config file should be
+  relative to that config file. For example, a matplotlib style file
+  might be packaged with the default config.
+- Relative *output* paths specified in a default config file should be
+  relative to the *current directory*.
+  For example, a path for storing produced figures. This should definitely
+  not be relative to the default config file, which will likely be buried
+  under some external package (very possibly under a `site-packages` 
+  the user will never look into.)
+
+We use two heuristics to differentiate between cases, which should be
+reliable unless users intentionally break their assumptions:
+
+- If the `root/path` concatenation exists => Assume an input path.
+  (Broken if a file or directory is added to this location manually.)
+- SPECIAL CASE: If `path` is simply "." and the current root is the
+  default config => Always resolve relative to current directory,
+  independent of whether it is an input or output path.
+  (I.e. assume an output path.)
+:::
 
 ## Hierarchical fields
 

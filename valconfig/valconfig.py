@@ -299,16 +299,20 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         # set flags (e.g. using GPU or not).
         # Default values are listed below; uncomment and edit as needed.
         #
-        # Note that this file was generated from a defaults file packaged with
+        # This file was generated from a defaults file packaged with
         # '{package_name}': it may not include all available options, although
-        # should include the most common ones. For a full list of options,
-        # refer to {package_name}’s documentation, or inspect the
+        # it should include the most common ones. For a full list of options,
+        # refer to '{package_name}'’s documentation, or inspect the
         # config module `{config_module_name}`.
         #
-        # Adding a new config field is done by modifying the config module
-        # `{config_module_name}`, located at {config_module_path}.
+        # Adding a new config field is done by modifying the '{config_class_name}'
+        # class in the config module `{config_module_name}`.
         
         """
+        # NB: It would be nice to indicate the path to the config module,
+        #     but `inspect.getsourcefile(type(self))` only works if the `config`
+        #     object is created after the module is finished loading.
+        #     (Meaning we could not then put `config = Config()` at the end of the module.)
     __value_substitutions__   : ClassVar = {"<None>": None}
 
     # Internal vars
@@ -700,10 +704,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         """
         # Determine the dynamic fields for the info message added to the top
         # of the template config
-        config_module_path = self.__file__
         config_module_name = self.__module__
         package_name, _    = self.__module__.split(".", 1)
             # If the ValConfig subclass is defined in ``mypkg.config.__init__.py``, this will return ``mypkg``.
+        config_class_name  = type(self).__qualname__
 
         top_message = self.__top_message_default__
         # Remove any initial newlines from `top_message`
@@ -715,7 +719,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
         top_message = textwrap.dedent(
             top_message.format(package_name=package_name,
                                config_module_name=config_module_name,
-                               config_module_path=config_module_path))
+                               config_class_name=config_class_name))
 
         if not Path(path_user_config).exists():
             # The user config file does not yet exist – create it, filling with
