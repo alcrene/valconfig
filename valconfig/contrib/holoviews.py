@@ -4,19 +4,30 @@ from typing import Optional, ClassVar, Union, Literal, List
 from collections.abc import Mapping, Sequence
 from configparser import ConfigParser
 
-import matplotlib.pyplot as plt
-
 # from mackelab_toolbox.utils import Singleton
 from ..valconfig import ValConfig
 
+# Matplotlib
+try:
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    class plt:
+        class style:
+            available = []
+            @staticmethod
+            def use(s): return None
+
 # HoloConfig
 from typing import Any, Dict, Tuple
+import addict
 try:
     from pydantic.v1 import validator, root_validator #, StrictInt, StrictFloat, StrictBool
 except ModuleNotFoundError:
     from pydantic import validator, root_validator #, StrictInt, StrictFloat, StrictBool
-import holoviews as hv
-import addict
+try:
+    import holoviews as hv
+except ModuleNotFoundError:
+    hv = None
 
 # Generic parameter type for Holoviews options
 HoloParam = Union[int, float, bool,
@@ -104,6 +115,8 @@ class GenericParam:
                 # Match an expression like Palette("copper")
                 m = re.fullmatch(r"Palette\((['\"])([^\1]*)\1\)", v)
                 if m:
+                    if hv is None:
+                        return v  # If HoloViews is not loaded, we can’t create a Palette
                     try:
                         pal = hv.Palette(m[2])
                     except KeyError:  # Can happen if name is mistyped, or the required backend is not loaded.
@@ -114,6 +127,8 @@ class GenericParam:
                 # Match an expression like Cycle("copper")
                 m = re.fullmatch(r"Cycle\((['\"])([^\1]*)\1\)", v)
                 if m:
+                    if hv is None:
+                        return v  # If HoloViews is not loaded, we can’t create a Cycle
                     try:
                         cyc = hv.Cycle(m[2])
                     except KeyError:  # Idem
@@ -227,7 +242,7 @@ def _replace_colors(value, colors):
         for field in value.split(".")[1:]:
             c = c.get(field)
         # Check if color is a cycle
-        if isinstance(c, (list, tuple)):  # Color cycle
+        if isinstance(c, (list, tuple)) and hv:  # Color cycle
             name = value[7:]  # Remove 'colors.'
             return hv.Cycle(name, values=c)
         else:
@@ -376,6 +391,8 @@ class HoloConfigBase(ValConfig):
     @property
     def all_element_opts(self):
         """Return all set opts, for all plot Elements, including defaults."""
+        if not hv:  # If HoloViews is not installed, then there are no allowed opts
+            return {}
         allowed_opts = hv.opts._element_keywords(self._backend, self._elem_names)
         opts = {}
         for elem in self._elem_names:
@@ -445,9 +462,12 @@ class FiguresConfig(ValConfig):
         within validators like GenericParam.validate
         We do this in two separate steps: 
         - In this pre-validator, we load the renderers with default options.
-        - In the post-validator below, once the values have been parsed,
-          we check if they contain arguments for the renderer and set them.
+        - In the post-validator below, once the values have been pa   we check if they contain arguments for the renderer and set them.
         """
+        try:
+            import holoviews as hv
+        except ModuleNotFoundError:
+            return values  # If holoviews is not installed, there’s nothing to do
         if values.get("matplotlib"):
             hv.renderer("matplotlib")
         if values.get("bokeh"):
@@ -459,6 +479,8 @@ class FiguresConfig(ValConfig):
         """By preemptively loading the backends, we ensure that e.g.
         ``hv.opts(*config.figures.bokeh)`` does not raise an exception.
         """
+        if hv is None:  # Nothing to do if Holoviews is not installed
+            return values
         if values.get("matplotlib"):
             renderer = hv.renderer("matplotlib")
             render_args = values["matplotlib"].renderer
@@ -477,6 +499,8 @@ class FiguresConfig(ValConfig):
 
     @root_validator
     def set_defaults(cls, values):
+        if hv is None:  # Nothing to do if Holoviews is not installed
+            return values
         for backend in ["matplotlib", "bokeh"]:
             if values.get(backend) and backend in hv.Store.renderers:  # If backend is not in `renderers`, than the best guess is that `load_backends` failed for that backend
                 hv.Store.set_current_backend(backend)  # Only to silence warnings
