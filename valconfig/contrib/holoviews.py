@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from configparser import ConfigParser
 
 # from mackelab_toolbox.utils import Singleton
-from ..valconfig import ValConfig
+from ..v1 import ValConfig
 
 # Matplotlib
 try:

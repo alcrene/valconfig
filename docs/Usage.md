@@ -15,7 +15,7 @@ BigProject
 ├── main.py
 └── config
     ├── __init__.py
-    └── defaults.cfg
+    └── defaults.toml
 ```
 :::
 
@@ -28,7 +28,7 @@ BigProject
 ├── main.py
 └── config
     ├── __init__.py
-    ├── defaults.cfg
+    ├── defaults.toml
     └── valconfig.py
 ```
 :::
@@ -61,7 +61,7 @@ from pydantic import HttpUrl
 from scityping.numpy import Array
 
 class Config(ValConfig):
-    __default_config_path__ = "defaults.cfg"
+    __default_config_path__ = "defaults.toml"
 
     data_source: Optional[Path]
     log_name: Optional[str]
@@ -87,8 +87,6 @@ from pydantic import HttpUrl
 from scityping.numpy import Array
 
 class Config(ValConfig):
-    __default_config_path__ = "defaults.cfg"
-
     data_source: Optional[Path]
     log_name: Optional[str]
     use_gpu: bool
@@ -103,25 +101,21 @@ config = Config()
 ::::
 
 Defaults can be specified directly in the `Config` class, but when possible it
-is recommended to specify them in a separate config file, which in this example
-we named `defaults.cfg`. It might look something like the following
+is recommended to specify them in a separate config file `defaults.toml`.[^defaults-name-can-changed] It might look something like the following
 
-```
-# defaults.cfg
-[DEFAULTS]
-
-data_source   = <None>
-log_name      = <None>
-use_gpu       = False
-n_units       = 3
+```toml
+# defaults.toml
+data_source   = "<None>"
+log_name      = "<None>"
+use_gpu       = "False"
+n_units       = "3"
 connectivites = [[.3, -.3,  .1],
                  [.1,  .1, -.2],
                  [.8,   0, -.2]]
-url           = http://example.com
+url           = "http://example.com"
 ```
 
-The path to this file is specified by defining the class variable `__default_config_path__`. When this variable is undefined or `None`,
-`Valconfig` presumes that no such file exists.
+[^defaults-name-can-change]: The name for defaults file can be changed by defining the class attribute `__default_config_path__` in your `Config` object. It is treated as a relative path, starting from the directory containing the module where your `Config` object is defined. You can set the value to `None` to prevent *ValConfig* from searching for a defaults file.
 
 :::{Important}
 Your `Config` class should be instantiable without arguments, as
@@ -163,8 +157,8 @@ Config(use_gpu=True)
 
 The keyword form can be useful when updating values programmatically.
 That said, if you find yourself updating the config programmatically, consider
-whether it might not be better to move that logic to a [validator] method
-of the `Config`
+whether it might not be better to move that logic to a [validator](https://docs.pydantic.dev/latest/concepts/validators) method
+of the `Config`.
 
 ## User-specific local configuration
 
@@ -180,80 +174,66 @@ adding local config files:
 
 :::{card} (Jane, laptop)
 
-```
-# local.cfg
-[DEFAULTS]
-log_name    = Jane
-use_gpu     = False
-data_source = /home/Jane/project-data
+```toml
+# local.toml
+log_name    = "Jane"
+use_gpu     = "False"
+data_source = "/home/Jane/project-data"
 ```
 :::
 
 :::{card} (Jane, workstation)
-```
-# local.cfg
-[DEFAULTS]
-log_name    = Jane
-use_gpu     = True
-data_source = /shared-data/BigProject
+```toml
+# local.toml
+log_name    = "Jane"
+use_gpu     = "True"
+data_source = "/shared-data/BigProject"
 ```
 :::
 
 :::{card} (Mary, laptop)
-```
-# local.cfg
-[DEFAULTS]
-log_name    = Mary
-use_gpu     = False
-data_source = D:\project-data
+```toml
+# local.toml
+log_name    = "Mary"
+use_gpu     = "False"
+data_source = 'D:\project-data'
 ```
 :::
 
 ::::
 
-We correspondingly add `local.cfg` to the file layout and the `Config` definition:
+We correspondingly add `local.toml` to the file layout
 
-::::{grid} 1 1 2 2
+[^local-name-can-change]: The name for local configuration file can be changed by defining the class attribute `__local_config_filename__` in your `Config` object. You can set the value to `None` to prevent *ValConfig* from searching for local config file.
 
-:::{grid-item-card} File layout
-:columns: auto
+::::{tab-set}
+
+:::{tab-item} Package install
+:sync: package-install
 ```
 BigProject
 ├── .git/
 ├── __init__.py
-├── local.cfg
+├── local.toml
 ├── main.py
 └── config
     ├── __init__.py
-    ├── defaults.cfg
-    └── valconfig.py
+    └── defaults.toml
 ```
 :::
 
-:::{grid-item-card} `Config definition`
-:columns: auto
-
-```python
-# config/__init__.py
-from valconfig import ValConfig
-
-from pathlib import Path
-from typing import Optional
-from pydantic import HttpUrl
-from scityping.numpy import Array
-
-class Config(ValConfig):
-    __default_config_path__ = "defaults.cfg"
-    __local_config_filename__ = "local.cfg"
-
-    data_source: Optional[Path]
-    log_name: Optional[str]
-    use_gpu: bool
-    url: HttpUrl
-    n_units: int
-    connectivites: Array[float, 2]
-
-config = Config()
+:::{tab-item} Inlined-source install
+:sync: source-install
+```
+BigProject
+├── .git/
+├── __init__.py
+├── local.toml
+├── main.py
+└── config
+    ├── __init__.py
+    ├── defaults.toml
+    └── valconfig.py
 ```
 :::
 
@@ -261,22 +241,26 @@ config = Config()
 
 When `Config` instantiates, it does the following:
 
-1. Parse the file at the location pointed to by `__default_config_path__` and
-   instantiate the `config` instance.
-2. Search the current directory for a file matching `__local_config_filename__`.  
-   If one is found, it is parsed and `config` updated.
-3. Move up the directory tree and search again for a file matching `__local_config_filename__`.  
-   `ValConfig` will continue moving up the directory tree until it hits the root directory.[^multiple-local-configs]
+1. Check `BigProject/config` for a file named `defaults.toml`.
+2. Walk up the directory tree, starting at the _current directory_, until it hits upon a file marking the root of the project. In this case this would be the `.git` file.[^root-filenames]
+3. As it recurses up the tree, *ValConfig* keeps track of any `local.toml` file it encounters.
+4. Once *ValConfig* has found the project root, it parses (“validates” in Pydantic parlance) all configuration values at once, with the following order of precedence:
+   1. Keyword arguments passed directly to the `Config(…)` call
+   2. Values defined in local configuration files.
+      If there are many such files, those at _deeper_ levels of the hierarchy (so closest to the current working directory) have _higher_ precedence.
+   3. Values defined in the defaults configuration file.
+   4. Default values defined in the `Config` class definition.
 
- In our example, to find `local.cfg`, the project would need to be executed from
- within `BigProject` or one of its subdirectories.
 
 :::{hint} We can think of repositories as being used either as a “project” or
-a “library” – where library repositories are *imported* by projects. 
+a “library”, with library repositories being _imported_ by projects. 
 Typically a user-local config file is useful for project repositories.
 :::
 
 
+
+[^root-filenames]: By default, the files indicating a project root are `.git`, `.hg`, `.smt`, `pyproject.toml`,
+  `setup.cfg`, `setup.py` and `poetry.lock`. This can be changed by overriding the class attribute `__projectroot_filenames__`.
 [^multiple-local-configs]: In fact, the search up the directory tree continues
   until we hit the root directory. Then all the found config files are parsed
   in *reversed* order, and the `config` instance updated with each. This allows
@@ -292,60 +276,46 @@ having to write custom validators for some common cases, the following special
 values are provided:
 
 - `<None>`: Converted to `None`.
-- `<default>`: Use the default defined in the `BaseModel`. Can be used to
-  unset an option from another config file.
+- `<PROJECTROOT>`: In `Path` type fields, this will be substituted by the identified project root. A dollar sign `$` can also be used for the same effect.
+  ```toml
+  path1 = "<PROJECTROOT>/this/path/is/relative/to/project/root"
+  path2 = "$/so/is/this/one"
+  ```
+- `<default>`: Scan the sources for a value in _reverse_ order of their precedence, so that defaults defined in the `BaseModel` or `defaults.toml` are preferred.
+  Can be used to unset an option from another config file.
 
-To add your own substitutions, update the dictionary `__value_subsitutions__`
-in your `Config` subclass.
+To add your own substitutions, define the dictionary `__sentinel_substitutions__`
+in your `Config` subclass:
+
+```python
+class Config(ValConfig):
+  __sentinel_substitutions__: ClassVar = ValConfig | {"<SITEURL>": "https://ourcompany.com"}
+```
 
 ## Relative path resolution
 
-When a value, after validation, is an instance of {py:class}`~python:pathlib.Path`, then it is resolved with the following rules:
-- If the path is absolute (i.e. it starts with `/`), it is not changed.
-- If the path is relative, it is prepended with the directory in which it was defined.
-  For example, if the file `~/my-projects/projectA/local.cfg` defines the path
-  ```
-  "../data/"
-  ```
-  it will be resolved to
-  ```
-  "~/my-projects/data/"
-  ```
-- For paths default in a defaults file, the logic is more delicate.
-  The gist is that input paths are relative to the default config file,
-  while output paths are relative to the *current directory*.
-  For details on how we differentiate between input and output path,
-  see "More on path resolution" below.
+We apply the following rules to fields of type `Path`
 
-:::{dropdown} More on path resolution
-There are different contexts for a relative path specified in a
-config file, each with a different "obvious" resolution.
-The path resolution logic is contained in the function `ValConfig.resolve_path`,
-which considers the following situations:
+- Absolute paths are never be modified.
+- Relative paths loaded from a **config file** can have three different anchors:
+  + A path with no prefix, like `relative/to/file`, is relative to the **config file**.
+  + A path with a dot prefix, like `./relative/to/cwd`, is relative to the **current directory**.
+  + A path with the special marker `<PROJECTROOT>/root_file` is relative to the **project root**.
+    The shorthand `$/root_file` can also be used for a path relative to the project root.
+- Relative paths set directly on the Config object are not associated to a config file;
+  these are always relative to the **current directory**.
 
-- Absolute paths are never modified.
-- Relative paths specified in a user-local config file should always be
-  relative to that config file.
-- Relative *input* paths specified in a default config file should be
-  relative to that config file. For example, a matplotlib style file
-  might be packaged with the default config.
-- Relative *output* paths specified in a default config file should be
-  relative to the *current directory*.
-  For example, a path for storing produced figures. This should definitely
-  not be relative to the default config file, which will likely be buried
-  under some external package (very possibly under a `site-packages` 
-  the user will never look into.)
+Note that the project root is not automatically expanded: it works exactly like the home directory markers.
+To fully expand a path, use ``path.expandprojectroot()``.
 
-We use two heuristics to differentiate between cases, which should be
-reliable unless users intentionally break their assumptions:
+:::{important}
+For this logic to apply, the annotation type of a field must be either `Path` `Optional[Path]` or `Path | None`.
+If it has other type, e.g. `Path | str` or `Annotated[Path]`, it will not be recognized as a Path field and no special logic will be applied.
 
-- If the `root/path` concatenation exists => Assume an input path.
-  (Broken if a file or directory is added to this location manually.)
-- SPECIAL CASE: If `path` is simply "." and the current root is the
-  default config => Always resolve relative to current directory,
-  independent of whether it is an input or output path.
-  (I.e. assume an output path.)
+Paths to which *ValConfig* has applied the logic above will appear as type `ConfigPath` in the validated config object.
 :::
+
+
 
 ## Hierarchical fields
 
@@ -355,7 +325,7 @@ TODO: Side-by-side cards
 
 TODO: Example: add a field to `contrib.FiguresConfig`
 
-## Config class options
+<!-- ## Config class options
 
 The behaviour of a `ValConfig` subclass can be customized by setting class
 variables. Three have already introduced: `__default_config_path__`, 
@@ -406,6 +376,7 @@ variables. Three have already introduced: `__default_config_path__`,
 `__top_message_default__`
 : The instruction message added to the top of a
   template config file when it is created.
+ -->
 
 (validators)=
 ## Advanced usage: adding logic with validators
@@ -416,6 +387,8 @@ via properties:
 
 ```python
 from valconfig import ValConfig
+from pathlib import Path
+from typing import Optional
 
 class Config(ValConfig):
   data_source: Optional[Path]
@@ -432,7 +405,7 @@ class Config(ValConfig):
     return f"{self.logname} ({self.data_source})"
 ```
 
-However there should be little use in overriding `__init__`, since `ValConfig`
+However there should be little use in overriding `__init__`, since *Pydantic*
 provides *validators* which can be used to assign arbitrary logic to a field:
 
 ```python
@@ -443,29 +416,30 @@ from valconfig import ValConfig
 class Config(ValConfig):
   use_gpu: bool
 
-  @validator("use_gpu")
-  def check_gpu(cls, v):
+  @validator("use_gpu", mode="after")
+  @classmethod
+  def check_gpu(self, v):
     if v and not torch.has_cuda:
       print("Cannot use GPU: torch reports CUDA is not available.")
       v = False
     return v
 ```
 
-By default, custom validators are run after a value has been cast to the
-prescribed type. To run a validator before type casting, add the `pre` keyword:
+The `"after"` model indicates to run the validator after a value has been cast to its target prescribed type. To run a validator before type casting, use the `"before"` mode:
 
 ```python
 from pathlib import Path
 from valconfig import ValConfig
+from typing import Optional
 
 class Config(ValConfig):
-  data_source: Optional[Path]
+  tokens: frozenset 
 
-  @validator("data_source", pre=True):
-  def default_source(cls, src):
-    if src is None:
-      src = "../data"  # Because we use pre=True, we don’t need to cast to Path
-    return src
+  @validator("data_source", mode="before"):
+  @classmethod
+  def default_source(cls, tks):
+    return [tk for tk in _tks if not tk.startswith("private_")]
+      # Because we use mode="before", we don’t need to cast to frozenset
   ```
 
-There is a lot more one can do with validators, as detailed in [Pydantic’s documentation](https://docs.pydantic.dev/usage/validators/).
+There is a lot more one can do with validators, as detailed in [Pydantic’s documentation](https://docs.pydantic.dev/latest/concepts/validators/).

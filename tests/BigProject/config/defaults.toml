@@ -1,0 +1,13 @@
+#data_source   =
+default_data_source = "wordlist.txt"
+out_dir       = "<PROJECTROOT>/output.dat"
+err_dump_path = "."
+#tmp_dir       =
+prefix        = "<None>"
+#log_name      = 
+use_gpu       = false
+n_units       = 3
+# connectivities = [[.3, -.3,  .1],
+#                   [.1,  .1, -.2],
+#                   [.8,   0, -.2]]
+url           = "http://example.com"

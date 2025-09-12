@@ -3,13 +3,13 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 """
-A base classe for project config objects
+A base class for project config objects
 
 For a package called `MyPackage`, the following files should be defined:
 
     MyPackage/MyPackage/config/__init__.py
-    MyPackage/MyPackage/config/defaults.cfg
-    MyPackage/local-config.cfg
+    MyPackage/MyPackage/config/defaults.toml
+    MyPackage/local.toml
 
 Within MyPackage/MyPackage/config/__init__.py, one then does something like
 
@@ -28,123 +28,317 @@ Within MyPackage/MyPackage/config/__init__.py, one then does something like
 
     config = Config()
 
-(c) Alexandre René 2022-2023
+(c) Alexandre René 2022-2025
 https://github.com/alcrene/valconfig
 """
-import os
+# %%
+
 import sys
+import os
 import logging
-from pathlib import Path
-from collections import defaultdict
-from collections.abc import Iterable, Mapping, Callable
-from typing import Optional, Union, ClassVar#, _UnionGenericAlias  >= 3.9
-from configparser import ConfigParser, ExtendedInterpolation
-from contextlib import contextmanager
-try:
-    from pydantic.v1 import BaseModel, validator
-except ModuleNotFoundError:
-    from pydantic import BaseModel, validator
-# from pydantic.main import ModelMetaclass
-import textwrap
+from   collections import ChainMap
+from   collections.abc import Mapping, Iterable
+from   itertools import chain
+from   typing import Union, ClassVar, Optional, Literal, Any, Annotated, NamedTuple
+from   pathlib import Path
+from   warnings import warn
+import tomllib
+
+from pydantic import (BaseModel, Field, ValidationInfo, 
+                      model_validator, field_validator)
+from pydantic.main import PydanticUndefined
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ValConfig", "ensure_dir_exists"]
+__all__ = ["ConfigPath", "ValConfig"]
 
-def _prepend_rootdir(cls, val):
-    """Prepend any relative path with the current root directory."""
-    if isinstance(val, Path):
-        val = cls.resolve_path(val)
-    return val
+# Module constants
+_config_instances = {}
 
-@contextmanager
-def temp_setattr(obj, attr, value):
-    """
-    Temporarily set `obj.attr` to `value` iff `obj` already defines `attr`.
-    The value of `obj.attr` is reset when we exit the context.
-    """
-    if hasattr(obj, attr):
-        old_attr = getattr(obj, attr)
-        setattr(obj, attr, value)
-        try:
-            yield obj
-        finally:
-            setattr(obj, attr, old_attr)
-    else:
-        yield obj
+class FalsySentinel:
+    def __init__(self, name=None):
+        if name: self.__name__ = name
+    def __str__(self): return self.__name__
+    def __repr__(self): return self.__name__
+    def __bool__(self): return False
 
-@contextmanager
-def temp_match_attr(obj, src, attr):
-    """
-    Temporarily set `obj.attr` to the value of `src.attr`, iff both `obj`
-    and `src` define `attr`.
-    The value of `obj.attr` is reset when we exit the context.
-    """
-    if hasattr(obj, attr) and hasattr(src, attr):
-        with temp_setattr(obj, attr, getattr(src, attr)) as newobj:
-            yield newobj
-    else:
-        yield obj
+class MissingDefaultError(ValueError):
+    pass
 
-class ValConfigMeta(type(BaseModel)):
+KWARGS = FalsySentinel("KWARGS")   # Used to indicate the kwarg parameters in the sourced chain map
+
+# %%
+
+class SourcedChainMap(ChainMap):
     """
-    Some class magic with nested types:
-    1. If a nested type is also used to declare a value or annotation, it is
-       left untouched.
-    2. If a nested type is declared but not used, do the following:
-       1. Convert it to a subclass of `BaseModel` if it isn't already one.
-          This allows concise definition of nested configuration blocks.
-       2. Declare an annotation with this type and the same name.
-          ('Type' is appended to the attribute declaring the original type,
-          to prevent name conflicts.)
-          Exception: If "<typename>Type" is already used in the class, and thus
-          would cause conflicts, no annotation is added.
+    The idea of a SourcedChainMap is to function as a dictionary, for which it
+    is also possible to query where each value came from.
+    The target use case is to combine dictionaries of configuration values,
+    where some have higher precedence; for example “defaults” and “locals” dictionary.
+    Each dictionary is associated a “source”, which can be any Python object;
+    typical source types might be a string or a file path.
+
+    CAUTION: Although the `maps` and `sources` attribute are mutable
+          (as `maps` is in the base ChainMap), they must be kept in synced:
+          any addition/removal to one must be applied to the other.
+          So mutating the internal structure is not as safe as with ChainMap.
+    TODO: Currently, modifications happen on the leftmost dict, so those data
+          may become disassociated from their source.
+          It would be better, if the leftmost dict is sourced, to create a new
+          leftmost dict with source `None` before doing modifications.
     """
-    def __new__(metacls, cls, bases, namespace):
-        # Use ValConfig annotations as default.
-        # However, in order not to lose a default if the user *didn't* assign to that attribute,
-        # we only use annotation defaults for values which are also in `namespace`.
-        default_annotations = {} if cls  == "ValConfig" \
-                                 else ValConfig.__annotations__
-        annotations = {**{nm: ann for nm, ann in default_annotations.items()
-                          if nm in namespace},
-                       **namespace.get("__annotations__", {})}
-        if annotations:
-            # Unfortunately a simple `Union[annotations.values()].__args__` does not work here
-            def deref_annotations(ann):
-                if isinstance(ann, Iterable):
-                    for a in ann:
-                        yield deref_annotations(a)
-                elif hasattr(ann, "__args__"):
-                    for a in ann.__args__:
-                        yield deref_annotations(a)
-                else:
-                    yield ann
-            annotation_types = set(deref_annotations(T) for T in annotations.values())
+    def __init__(self, *maps, sources=()):
+        if len(maps) != len(sources):
+            raise ValueError()
+        if maps:
+            self.maps = list(maps)
+            self.sources = list(sources)
         else:
-            annotation_types = set()
+            self.maps = [{}]
+            self.sources = [None]
+    def get_with_source(self, key, default=None) -> tuple[Any, Any]:
+        """Retrieve both the value at `key` and its associated source.
+        If no value is found, return `default` with a source of `None`.
+        """
+        for mapping, source in zip(self.maps, self.sources):
+            try:
+                return mapping[key], source
+            except KeyError:
+                pass
+        return default, None   # Default value has source 'None' by convention
+    def reversed_get(self, key, default=None) -> Any:
+        """Retrieve the value with the lowest precedence.
+        """
+        for mapping in reversed(self.maps):
+            try:
+                return mapping[key]
+            except KeyError:
+                pass
+        return default
+
+    @classmethod
+    def fromkeys(cls, iterable, *args):
+        raise NotImplementError("`fromkeys` would erase the source information. If this is what you want, explicitely cast to `ChainMap` instead.")
+    def new_child(self, m, source=None):
+        """Pass `source=None` to add an unsourced mapping."""
+        return self.__class__(m, *self.maps, sources=(source, *self.sources))
+    def copy(self):
+        'New ChainMap or subclass with a new copy of maps[0] and refs to maps[1:]'
+        new_cm = super().copy()
+        new_cm.sources = self.sources
+        return new_cm
+    @property
+    def parents(self):
+        'New ChainMap from maps[1:].'
+        return self.__class__(*self.maps[1:], sources=self.sources[1:])
+    def __ror__(self, other):
+        raise NotImplementError("TODO")
+
+
+# %%
+
+class ConfigPath(Path):
+    """
+    The purpose of `ConfigPath` is to allow resolving paths relative to different anchors.
+    
+    - Absolute paths are never be modified.
+    - Relative paths loaded from a **config file** can have three different anchors:
+      + A path with no prefix, like `relative/to/file`, is relative to the **config file**.
+      + A path with a dot prefix, like `./relative/to/cwd`, is relative to the **current directory**.
+      + A path with the special marker `<PROJECTROOT>/root_file` is relative to the **project root**.
+        The shorthand `$/root_file` can also be used for a path relative to the project root.
+    - Relative paths set directly on the Config object are not associated to a config file;
+      these are always relative to the **current directory**.
+
+    Note that the project root is not automatically expanded: it works exactly like the home directory markers.
+    To fully expand a path, use ``path.expandprojectroot()``.
+    (If `.projectroot` contains a home directory marker "~", it is also expanded.)
+
+    From the point of view of `ConfigPath`, a “project root” is just a Path which can
+    be set during path creation or afterwards by assigning to the ``projectroot`` attribute.
+    It is typically determined by moving up the directory tree,
+    starting from the current working directory, until one of a set of
+    predetermined files (like `.git` or `pyproject.toml`) is identified.
+    See `ValConfig.load_config_files` for more details.
+    
+    """
+    __slots__ = ("projectroot",)
+    __projectroot_markers__ = {"$", "<PROJECTROOT>", "<projectroot>", "<ProjectRoot>"}
+
+    def __init__(self, *pathsegments, anchor_dir=None, projectroot=None):
+        self.projectroot = projectroot
+        path = Path(*pathsegments)
+        # Prepend the anchor_dir, but only if the path is not absolute
+        # (NB: We don’t use `is_absolute()` here because we want "~/path" and "<PROJECTROOT>/path" to be considered as absolute)
+        # Starting with a user '~' or projectroot marker counts as absolute
+        # (the logic here is the same as in expandprojectroot)
+        if (not (path.drive or path.root)                   # Probably not absolute
+            and anchor_dir                                  # `anchor_dir` is not None
+            and path._tail and (path._tail[0][:1] != "~"    # Not rel. to home dir
+                                and path._tail[0] != "."    # Not rel. to CWD
+                                and path._tail[0] not in self.__projectroot_markers__)):  # Not rel. to project root => Definitely not absolute
+            drv, root, tail = self._parse_path(anchor_dir)
+            pathsegments = (drv, root, *tail, *pathsegments)
+        super().__init__(*pathsegments)
+
+    def expandprojectroot(self, projectroot=None, projectrootmarkers=None):
+        """ Return a new path with the project root marker (defined by __projectroot_marker__)
+        replaced by the value of ``os.path.expanduser(self.projectroot)``.
+        """
+        projectroot = projectroot or self.projectroot
+        projectrootmarkers = prm if (prm:=projectrootmarkers is not None) else self.__projectroot_markers__
+        # (Implementation is exactly analogous to expanduser()
+        if (not (self.drive or self.root) and
+            self._tail and self._tail[0] in projectrootmarkers):
+            if projectroot is None:
+                raise RuntimeError("Must set `projectroot` before attempting to expand project root markers.")
+            drv, root, tail = self._parse_path(os.path.expanduser(self.projectroot))
+            return self._from_parsed_parts(drv, root, tail + self._tail[1:])
+        return self
+
+# %%
+
+
+def parse_configpaths(cls, val: None|str|Path|ConfigPath, info: ValidationInfo) -> ConfigPath:
+    """
+    This validator is added to the ValConfig for every field of type `Path`.
+    """
+    # Normalization
+    if val is None or isinstance(val, ConfigPath):
+        return val
+    if isinstance(val, Path):
+        val = str(val)
+    assert isinstance(val, str), f"Not a string (received {val} ({type(val)}) while validating {info.field_name})"
+    assert isinstance(info.context.sourced_data, SourcedChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
+    # Retrieve the source from the validation info
+    data_val, source = info.context.sourced_data.get_with_source(info.field_name)
+    if data_val != val:
+        logger.debug(f"Path for field {info.field_name} was changed: was {data_val}, is now {val}. Data source is set to `None`.")
+        source = None 
+    # Infer the anchor directory from the source value
+    if isinstance(source, Path):
+        # The source will point to the actual config file, while the anchor should be the directory containing that file
+        anchor_dir = source.parent
+    elif source is KWARGS:
+        anchor_dir = None
+    elif not isinstance(source, (str, Path, type(None))):
+        raise ValueError(f"Value for config key '{info.field_name}' has a source of unexpected type ({type(source)}). "
+                         "This is likely an internal error.\n"
+                         f"(Value received was {source})")
+    else:
+        anchor_dir = source
+    # Create the ConfigPath
+    return ConfigPath(val, anchor_dir=anchor_dir, projectroot=info.context.projectroot)
+
+# %%
+
+
+def _flatten_annotations(ann):
+    """
+    Flatten annotations, including compound types like Optional[] and Union[].
+    The effect is very similar to what `yield from Union[ann].__args__`
+    would do, except that this doesn’t break if `ann` contains Typing objects
+    like Optional.
+
+    NB: This is not meant to be 100% robust, and may not behave as expected
+        with more specification type annotations like `Type[]`.
+        Such types however would usually make little sense for parsing
+        a configuration file stored as text.
+    """
+    if isinstance(ann, Iterable):
+        for a in ann:
+            yield from _flatten_annotations(a)
+    elif hasattr(ann, "__args__"):
+        for a in ann.__args__:
+            yield from _flatten_annotations(a)
+    elif isinstance(ann, (type, str)):
+        yield ann
+
+class ValConfigContext(NamedTuple):
+    sourced_data: SourcedChainMap
+    projectroot: Path
+
+class ValConfigMetaclass(type(BaseModel)):
+    def __new__(meta, clsname, bases, namespace):
+        """
+        Transforms a Config class so that
+
+            class Config(ValConfig):
+                path1: Path
+                path2: Path
+                a: int
+                b: float
+
+                class figures:
+                    size: tuple[float,float]
+
+
+        becomes approximately
+
+            class Config(ValConfig):
+                path1: ConfigPath
+                path2: ConfigPath
+                a: int
+                b: float
+
+                class figuresType(ValConfig):
+                    size: tuple[float,float]
+                figures: figuresType
+
+                @field_validator("path1", "path2", mode="before")
+                @classmethod
+                def parse_configpaths(...):
+                    ...
+
+        """
+        annotations = namespace.get("__annotations__", {})
+        annotation_types = {nm: set(_flatten_annotations(ann)) for nm, ann in annotations.items()}
+        config_paths_to_validate = []
+        # Iterate through annotations, looking for annotations `Path` and `Optional[Path]`
+        for name, T in annotations.items():
+            if T in {Path, "Path", Optional[Path], Optional["Path"]}:
+                annotations[name] = ConfigPath
+                config_paths_to_validate.append(name)
+        # Add the required validator for those paths
+        validator_name = "parse_configpaths"
+        if validator_name in namespace:
+            warn(f"Config class `{clsname}` already defines a `{validator_name}`, "
+                 "which the name normally reserved for validators which convert Path values to ConfigPath. "
+                 f"These validators, which were meant for values {config_paths_to_validate}, will not be added. "
+                 f"If this was not intentional, please rename `{validator_name}`.")
+        elif config_paths_to_validate:
+            namespace[validator_name] = field_validator(*config_paths_to_validate, mode="before")(
+                                            classmethod(parse_configpaths))
+
+        # del config_paths_to_validate, validator_name, annotations
+            # Pydantic assigns these __pydantic_parent_namespace__, which I’m pretty sure is unnecessary
+            # Then again, it doesn’t seem to do any harm, so I will just let it be.
+            # (It also adds 'name', 'T', 'meta', 'clsname', 'bases', 'namespace', which I would not know how to delete.)
+
+        # Convert any bare subclasses to ValConfig subclasses
+        # and create a corresponding attribute
+        all_annotation_types = set(chain.from_iterable(annotation_types.values()))
         attribute_types = set(type(v) for v in namespace.values())
         nested_classes = {nm: val for nm, val in namespace.items()
                           if isinstance(val, type) and nm not in {"Config", "__config__"}}
-        new_namespace = {nm: val for nm, val in namespace.items()
-                         if nm not in nested_classes}
+        namespace_without_classes = {nm: val for nm, val in namespace.items()
+                                     if nm not in nested_classes}
         new_nested_classes = {}
         for nm, T in nested_classes.items():
             # If a declared type was used, don't touch it or its name, and don't create an associated attribute
-            if T in annotation_types | attribute_types:
+            if T in all_annotation_types | attribute_types:
                 new_nested_classes[nm] = T
                 continue
             # Otherwise, append `Type` to the name, to free the name itself for an annotation
             # NB: This only renames the nested attribute, not the type itself
             new_nm = nm + "Type"
-            if new_nm in annotations.keys() | new_namespace.keys():
+            if new_nm in annotations.keys() | namespace_without_classes.keys():
                 new_nm = nm  # Conflict -> no rename
             # If it isn't already a subclass of BaseModel, make it one
             if T.__bases__ == (object,):
                 copied_attrs = {nm: attr for nm, attr in T.__dict__.items()
                                 if nm not in {'__dict__', '__weakref__', '__qualname__', '__name__'}}
-                newT = ValConfigMeta(nm, (ValConfig,), copied_attrs)
-                # newT = type(nm, (T,BaseModel), {})  
+                newT = ValConfigMetaclass(nm, (ValConfig,), copied_attrs)
             else:
                 if not issubclass(T, ValConfig):
                     logger.warning(f"For the nested Config class '{T.__qualname__}' "
@@ -156,53 +350,36 @@ class ValConfigMeta(type(BaseModel)):
             if new_nm != nm:  # Ensure we aren't overwriting the type
                 annotations[nm] = newT
 
-        # Create a `prepend_root` validator to any field which may be a Path
-        # (This test isn’t sophisticated: a field with type like `Tuple[Path,Path]`
-        # currently is not resolved, but would still be included.)
-        # There is no harm in applying prepend_root to extra fields, so in
-        # practice it is almost the same as using a "*" validator.
-        # Reason for not using a "*" validator: that gets executed after any
-        # custom validator, preventing validators from seeing the correct path.
-        # NOTE: Although I don’t anticipate it being useful, a subclass could override
-        # the prepend validator by defining its own `prepend_rootdir` method or attribute
-        path_fields = [nm for nm, ann in annotations.items()
-                       if "Path" in str(ann) and not "ClassVar" in str(ann)]
-        if path_fields:
-            validator_dict = {"prepend_rootdir": validator(*path_fields, allow_reuse=True)(_prepend_rootdir)}
-        else:
-            validator_dict = {}
-
-        return super().__new__(metacls, cls, bases,
-                               {**validator_dict,  # Place first so this validator has priority. Also, conceivably this allows a subclass to overwrite the validator
-                                **new_namespace,
+        # Now we can let Pydantic parse the updated class
+        return super().__new__(meta, clsname, bases,
+                               {**namespace_without_classes,
                                 **new_nested_classes,
                                 '__annotations__': annotations,
                                 '__valconfig_initialized__': False})
 
 
-# Singleton pattern
-_config_instances = {}
-
-class ValConfig(BaseModel, metaclass=ValConfigMeta):
+class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     """
-    Augments Python's ConfigParser with a dataclass interface and automatic validation.
-    Pydantic is used for validation.
+    Augments a Pydantic BaseModel with the ability to
+    - automatically load values from possibly multiple on-disk files;
+    - automatically create fields from nested types, to reduce boilerplate.
 
-    The following package structure is assumed:
 
-        code_directory
-        ├── .gitignore
-        ├── setup.py
-        ├── project.cfg
-        └── MyPkcg
-            ├── [code files]
-            └── config
-                ├── __init__.py
-                ├── defaults.cfg
-                └── [other config files]
+    Typical package structure looks something like assumed:
+
+        PROJECTROOT
+        ├── .git
+        ├── pyproject.py
+        └── MyProject
+            ├── config
+            │    ├── __init__.py
+            │    ├── defaults.toml
+            │    └── [other config files]
+            ├── local.toml
+            └── [code files]
 
     `ValConfig` should be imported and instantiated from within
-    ``MyPckg.config.__init__.py``::
+    ``MyProject.config.__init__.py``::
 
        from pathlib import Path
        from mackelab_toolbox.config import ValConfig
@@ -212,18 +389,79 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
            arg2: <type>
            ...
 
-       config = Config(Path(__file__).parent/".project-defaults.cfg")
+    The PROJECTROOT will be automatically recognized based on the detection
+    of certain files; these include .git, pyproject.toml, poetry.lock and .smt
+    The list of files can be changed by defining `__projectroot_filenames__`
 
-    `project.cfg` should be excluded by `.gitignore`. This is where users can
-    modify values for their local setup. If it does not exist, a template one
-    is created from the contents of `.project-defaults.cfg`, along with
-    instructions.
+    The `defaults.toml`, if present, must be located in the same directory
+    as the module which *defines* the Config class. So in the example above,
+    this means that it must be in the same directory as `__init__.py`.
+    Note that this does *not* need to be under PROJECTROOT; for example,
+    if you have installed your project with `pip`, the code will be in a
+    separate site-packages directory. Just make sure that your package
+    installation includes data files (see https://setuptools.pypa.io/en/latest/userguide/datafiles.html)
+    and everything will continue to work.
+    (If you want to change the path to the defaults, define `__default_config_path__` in your subclass.
+    This is a path relative to the directory containing the module where Config is defined. )
+
+    The `local.toml` files allow to override values in defaults.
+    These should typically be **excluded** from version control, to allow other
+    users to define their own overrides.
+    `local.toml` files are identified by starting from the **current working directory**,
+    and travelling up the hierarchy until we identify the PROJECTROOT.
+    It is possible to have multiple local files; those closer to the working
+    directory (i.e. with longer paths) are given higher precedence.
+    (To change the name ValConfig will search for local configuration files,
+    modify `__local_config_filename__`.)
+
+    .. rubric:: Customization
+       The naming conventions used by `ValConfig` are defined in class attributes,
+       such as `__local_config_filename__` and `__sentinel_substitutions__`.
+       These can all be changed, although only `__sentinel_substitutions__` has a clear use case.
+       Change these values by overriding them in your own ValConfig subclass.
+       (Don’t modify the value in the base class, as then any other package in your project which uses ValConfig may break.)
+       So if you want to rename local config files to "userconf.toml" and add a
+       substitution for "<SITEURL>", you could do the following::
+
+           class Config(ValConfig):
+             __default_config_path__: ClassVar = "userconf.toml"
+             __sentinel_substitutions__: ClassVar = ValConfig | {"<SITEURL>": "https://ourcompany.com"}
+
+       Note that you can also use Pydantic validators in your models to perform
+       more complex value conversions.
+    
+
+    .. rubric:: Special support for path fields:
+       All fields of type `Path` are converted to our custom type `ConfigPath`.
+       This is a subclass of `Path` which adds support for PROJECTROOT:
+       ConfigPaths may start with a project root marker, for example::
+    
+           <PROJECTROOT>/path/relative/to/projectroot
+           $/another/path/relative/to/projectroot
+
+       NB: For this to work, annotations must be either be `Path`, `Optional[Path]`
+           or `Path | None`. Any other annotation (e.g. `Path | str`) will leave
+           the Path type unchanged
+
+    (The recognized markers are defined by ConfigPath.__projectroot_markers__.)
+    To expand a ConfigPath, use `.expandprojectroot()`, in exact analogy to `.expanduser()`.
 
     There are some differences and magic behaviours compared to a plain
     BaseModel, which help to reduce boilerplate when defining configuration options:
     - Defaults are validated (`validate_all = True`).
-    - Values of ``"<default>"`` are replaced by the hard coded default in the Config
-      definition. (These defaults may be `None`.)
+    - Assignments are validated (`validate_assignments = True`)
+    - Types which are not recognized by Pydantic are allowed as type hints; validators then just
+      check that the passed value is of the correct type. (`arbitrary_types_allowed = True`)
+      (NB: Using custom types will almost certainly require defining a validator for those fields,
+       in order to parse the values loaded from config files.)
+    - An option can explicitly request the default value with the special string "<DEFAULT>"
+      This will be replaced by the value with the **lowest** precedence.
+      Lowest precedence of all are the default defined in the class definition
+      itself. Then values from `defaults.toml`, and finally values in `local.toml` in reverse precedence order.
+      (The default marker can be changed by defining `__default_markers__`.)
+    - Other sentinel can be defined by defining the dictionary `__sentinel_substitutions__`.
+      By default this replaces "<None>" by a Python ``None`` value.
+
     - Nested plain classes are automatically converted to inherit ValConfig,
       and a new attribute of that class type is created. Specifically, if we
       have the following:
@@ -235,118 +473,30 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
       then this is automatically converted to
 
           class Config(ValConfig):
-              class pathsType:
+              class pathsType(ValConfig):
                   projectdir: Path
 
               path : pathsType
-    - The user configuration file is found by searching upwards from the current
-      directory for a file matching the value of `Config.user_config_filename`
-      (default: "project.cfg")
-      + If multiple config files are found, **the most global one is used**.
-        The idea of a global config files is to help provide consistency across
-        a document. If a sub project is compiled as part of a larger one, we want
-        to use the larger project's config, which may set things like font
-        sizes and color schemes, for all figures/report pages.
-      + If it is important that particular pages use particular options, the
-        global config file is not the best place to set that. Rather, set
-        those options in the file itself, or a sibling text file.
-    # - If a user configuration file is not found, and the argument
-    #   `ensure_user_config_exists` is `True`, then a new blank configuration file
-    #   is created at the location we would have expected to find one: inside
-    #   the nearest parent directory which is a version control repository.
-    # - The `rootdir` value is the path of the directory containing the user config.
-    # - All arguments of type `Path` are made absolute by prepending `rootdir`.
-    #   Unless they already are absolute, or the class variable
-    #   `make_paths_absolute` is set to `False`.
-    #   !! NOT CURRENTLY TRUE !!: For reasons I don’t yet understandand, the
-    #   mechanism to do this adds the correct validator, but it isn’t executed.
-    #   For the moment, please import the `prepend_rootdir` function and apply it
-    #   (wrapping with ``validator(field)(prepend_rootdir)`` to all relevant fields.
-
-
-    Config class options
-    --------------------
-
-    __create_template_config: Set to `True` if you want a template config
-        file to be created in a standard location when no user config file is
-        found. Default is `False`. Typically, this is set to `False` for utility
-        packages, and `True` for project packages.
-        This option is ignored when `__local_config_filename__` is `None`.
-    __interpolation__: Passed as argument to ConfigParser.
-        Default is ExtendedInterpolation().
-        (Note that, as with ConfigParser, an *instance* must be passed.)
-    __empty_lines_in_values__: Passed as argument to ConfigParser.
-        Default is True: this prevents multiline values with empty lines, but
-        makes it much easier to indent without accidentally concatenating values.
-
-    Inside config/__init__.py, one would have:
-
-        config = Config(Path(__file__)/".defaults.cfg" 
     """
+    __valconfig_initialized__ : ClassVar = False
+    __valconfig_projectroot__ : ClassVar = None
 
-    ## Config class options ##
-    # Class options use dunder names to avoid conflicts
-    # __make_paths_absolute__  : ClassVar[bool]=True
-    __default_config_path__   : ClassVar[Optional[Path]]=None
-    __local_config_filename__ : ClassVar[Optional[str]]=None
-    __create_template_config__: ClassVar[bool] = True  # If True, a template config file is created when no local file is found. Requires a default config set with __default_config_path__
-    __interpolation__         : ClassVar = ExtendedInterpolation()
-    __empty_lines_in_values__  = False
-    __top_message_default__: ClassVar = """
-        # This configuration file for '{package_name}' should be excluded from
-        # git, so can be used to configure machine-specific variables.
-        # This can be used for example to set output paths for figures, or to
-        # set flags (e.g. using GPU or not).
-        # Default values are listed below; uncomment and edit as needed.
-        #
-        # This file was generated from a defaults file packaged with
-        # '{package_name}': it may not include all available options, although
-        # it should include the most common ones. For a full list of options,
-        # refer to '{package_name}'’s documentation, or inspect the
-        # config module `{config_module_name}`.
-        #
-        # Adding a new config field is done by modifying the '{config_class_name}'
-        # class in the config module `{config_module_name}`.
-        
-        """
-        # NB: It would be nice to indicate the path to the config module,
-        #     but `inspect.getsourcefile(type(self))` only works if the `config`
-        #     object is created after the module is finished loading.
-        #     (Meaning we could not then put `config = Config()` at the end of the module.)
-    __value_substitutions__   : ClassVar = {"<None>": None}
+    __default_config_path__   : ClassVar = "defaults.toml"
+    __local_config_filename__ : ClassVar = "local.toml"
+    __projectroot_filenames__ : ClassVar = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})  # If one of these files occurs in a directory, stop searching hierarchy
+    __default_value_markers__ : ClassVar = frozenset({"<default>", "<DEFAULT>"})
 
-    # Internal vars
-    __valconfig_current_root__: ClassVar[Optional[Path]]=None  # Set temporarily when validating config files, in order to resolve relative paths
-    __valconfig_deferred_init_kwargs__: ClassVar[list]=[]
-    __valconfig_parsing_default__: ClassVar[bool] = False  # Set temporarily to True when parsing a defaults file (i.e. one packaged with the the code)
+    __sentinel_substitutions__   : ClassVar = {"<None>": None, "<NONE>": None}
 
-
-    def read_cfg_file(self, cfg_path: Path) -> dict:
-        """
-        Read the contents of the file `cfg_path` and convert them to a
-        configuration dictionary.
-        Hierarchical parameters should be represented by nested dictionaries.
-        """
-        cfp = ConfigParser(interpolation=self.__interpolation__,
-                           empty_lines_in_values=self.__empty_lines_in_values__)
-        cfp.read(cfg_path)
-
-        # Convert cfp to a dict; this loses the 'defaults' functionality, but makes
-        # it much easier to support validation and nested levels
-        return {section: dict(values) for section, values in cfp.items()}
-
-
-    ## Pydantic model configuration ##
-    # `validation_assignment` must be True, other options can be changed.
-    class Config:
-        validate_all = True  # To allow specifying defaults with as little boilerplate as possible
-                             # E.g. without this, we would need to write `mypath: Path=Path("the/path")`
-        validate_assignment = True  # E.g. if a field converts str to Path, allow updating values with strings
+    model_config = dict(validate_default=True,         # Allow use simpler forms in class defaults, like `data_path: Path="/path/to/data"`
+                        validate_assignment=True,      # Allow use of simpler forms when updating config values.
+                        arbitrary_types_allowed=True,  # Allow passing arbitrary types: Pydantic will only check that they are instances. In particular, this allows us to support Path (and its replacement by ConfigPath) without any magic decorators
+                        ignored_types=(ValConfigMetaclass,))  # ValConfig classes are allowed to contained nested ValConfigs
 
     ## Singleton pattern ##
     def __new__(cls, *a, **kw):
         if cls not in _config_instances:
-            _config_instances[cls] = super().__new__(cls)  # __init__ will add this to __instances
+            _config_instances[cls] = super().__new__(cls)
         return _config_instances[cls]
     def __copy__(x):  # Singleton => no copies
         return x
@@ -359,494 +509,102 @@ class ValConfig(BaseModel, metaclass=ValConfigMeta):
 
     ## Initialization ##
 
-    # TODO: Config file as argument instead of cwd ?
-    def __init__(self,
-                 # default_config_file: Union[None,str,Path]=None,
-                 cwd: Union[None,str,Path]=None,
-                 # ensure_user_config_exists: bool=False,
-                 # rootdir: Union[str,Path],
-                 # path_default_config=None, path_user_config=None,
-                 # *,
-                 # config_module_name: Optional[str]=None,
-                 **kwargs
-                 ):
-        """
-        Instantiate a `Config` instance, reading from both the default and
-        user config files.
-        If the user-editable config file does not exist yet, an empty one
-        with instructions is created, at the root directory of the version-
-        controlled repository. If there are multiple nested repositories, the
-        outer one is used (logic: one might have a code repo separate from
-        and imported by a project repo; this should go in the project repo).
-        If no repository is found, no template config file is created.
-
-
-        See also `ValConfig.ensure_user_config_exists`.
-        
-        Parameters
-        ----------
-        # default_config_file: Path to the config file used for defaults.
-        #     SPECIAL CASE: If this value is None, then `ValConfig`
-        #     behaves like `ValConfigBase`: no config file is parsed or
-        #     created. This is intended for including as a component of a larger
-        #     ValConfig.
-        #     The assumption then is that all fields are passed by keywords.
-        #     NOT TRUE: Currently we do the special case if kwargs is non-empty.
-        cwd: "Current working directory". The search for a config file starts
-            from this directory then walks through the parents. 
-            The value of `None` indicates to use the current working directory;
-            especially if running on a local machine, this is generally what
-            you want, and is usually the most portable.
-        *
-        # config_module_name: The value of __name__ when called within the
-        #     project’s configuration module.
-        #     Used for autogenerated instructions in the template user config file.
-
-        # **kwargs:
-        #     Additional keyword arguments are passed to ConfigParser.
-
-        Todo
-        ----
-        When multiple config files are present in the hierarchy, combine them.
-        Relative paths in lower config files should still work.
-        """
+    def __init__(self, **kwargs):
         if self.__valconfig_initialized__:
-            # Already initialized; if there are new kwargs, validate them.
-            self.validate_dict(kwargs)
-            return
-
-        # elif kwargs:
-        #     # We have NOT yet initialized, but are passing keyword arguments:
-        #     # this may happen because of __new__ returning an existing instance,
-        #     # in which case this __init__ gets executed twice
-
-        #     # We flush this list after we initialize
-        #     valconfig_deferred_init_kwargs__.append(kwargs)
-
-        #     import pdb; pdb.set_trace()
-        #     self.__init__()
-        #     self.validate_dict(kwargs)
-
+            config_data = SourcedChainMap()
+            projectroot = self.__class__.__valconfig_projectroot__
         else:
-            # Normal path: Initialize with the config files
+            config_data, projectroot = self.load_config_files()
+            self.__class__.__valconfig_projectroot__ = projectroot
+        data = config_data.new_child(kwargs, source=KWARGS)
+        # Calling the validator manually allows us to load the config files before checking for missing arguments.
+        # Passing the data as a context allows individual validators to check the original source to resolve relative paths
+        self.__pydantic_validator__.validate_python(
+            data,
+            self_instance=self,
+            context=ValConfigContext(sourced_data=data, projectroot=projectroot)
+        )
 
-            ## Read the default config file ##
-            if self.__default_config_path__:
-                # Get the directory which contains this file
-                configdir = Path(sys.modules.get(self.__module__).__file__).parent
-                # Make config_path relative to configdir, and convert to Path
-                type(self).__default_config_path__ = configdir / self.__default_config_path__
-                # This will use super().__init__ because __valconfig_initialized__ is still False
-                with temp_setattr(type(self), "__valconfig_parsing_default__", True):
-                    self.validate_cfg_file(self.__default_config_path__, **kwargs)
-            else:
-                # If there is no config file, then all defaults must be defined in Config definition
-                # NB: validate_dict will detect that we are initializing and take care of calling __init__
-                #     It’s important not to call __init__ directly, because validate_dict takes care of setting _current_root__ of nested types
-                self.validate_dict(kwargs)
-                # super().__init__(**kwargs)
-
-            # Mark as initialized, so we don't take this branch twice
-            # Also, this ensures that further config files use setattr() instead of __init__ to set fields
-            type(self).__valconfig_initialized__ = True  # Singleton => Assign to class
-
-            ## Read the local (user-specific) config file(s) ##
-            # Any matching file in the hierarchy will be read; files deeper in the file hierarchy are read last, so have precedence
-            if self.__local_config_filename__:
-                cfg_fname = self.__local_config_filename__
-
-                ## Search for a file with name matching `cfg_fname` in the current directory and its parents ##
-                # If no project config is found, create one in the location documented above
-                if cwd is None:
-                    cwd = Path(os.getcwd())
-                default_location_for_conf_filename = None  # Will be set the first time we find a .git folder
-                cfg_paths = []
-               
-                rootdir = None
-                for wd in [cwd, *cwd.parents]:
-                    wdfiles = set(os.listdir(wd))
-                    if cfg_fname in wdfiles:
-                        rootdir = wd
-                        cfg_paths.append(wd/cfg_fname)
-                    if ({".git", ".hg", ".svn"} & wdfiles
-                          and not default_location_for_conf_filename):
-                        default_location_for_conf_filename = wd/cfg_fname
-
-                if rootdir:
-                    for cfg_path in reversed(cfg_paths):
-                        self.validate_cfg_file(cfg_path)
-                elif default_location_for_conf_filename is not None:
-                    if self.__create_template_config__:
-                        # We didn’t find a project config file, but we did find that
-                        # we are inside a VC repo => place config file at root of repo
-                        # `ensure_user_config_exists` creates a config file from the
-                        # defaults file, listing all default values (behind comments),
-                        # and adds basic instructions and the default option values
-                        assert self.__default_config_path__, f"Cannot create a template file at {default_location_for_conf_filename} if `{type(self).__qualname__}.__default_config_path__` is not set."
-                        self.add_user_config_if_missing(
-                            self.__default_config_path__,
-                            default_location_for_conf_filename)
-                elif self.__create_template_config__:
-                    logger.error(f"The provided current working directory ('{cwd}') "
-                                 "is not part of a version controlled repository.")
-
-            # ## Apply any deferred initialization kwargs ##
-            # for kw in self.__valconfig_deferred_init_kwargs__:
-            #     self.validate_dict(kw)
-            # self.__valconfig_deferred_init_kwargs__.clear()
-
-    # We use weird arg name below to avoid clashing with kwargs
-    def validate_cfg_file(self, __valconfig_cfg_path__: Path, **kwargs):
-        if not __valconfig_cfg_path__.exists():
-            logger.error(f"Config file path does not exist: '{__valconfig_cfg_path__}'")
-        cfdict = self.read_cfg_file(__valconfig_cfg_path__)
-
-        # Validate as a normal dictionary
-        # We set the current root so that relative paths are resolved based on
-        # the location of their config file
-        with temp_setattr(type(self), "__valconfig_current_root__", __valconfig_cfg_path__.parent.absolute()):
-            self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
-
-        # type(self).__valconfig_current_root__ = cfg_path.parent.absolute()
-        # self.validate_dict({**cfdict, **kwargs})  # Keyword args are given precedence over file arguments
-        # type(self).__valconfig_current_root__ = None
-
-    def validate_dict(self, cfdict):
-        """
-        Note: This function relies on `validate_assignment = True`
-
-        QoL feature: "one-level-up" as a default value
-            If there is no "pckg.colors" section, but there is a "colors" section,
-            use "colors" for "pckg.colors", if pckg expects that section.
-
-            This allows setting an option once, and all nested configs will
-            share the same value.
-
-        CONSEQUENCE: Settings at the top level will overwrite any settings with
-           the same name in nested settings. I’m not sure yet if this is a good
-           thing. In general it can be convenient, and it’s not hard to reset
-           options in nested configs if necessary, but it is somewhat unexpected
-           behaviour.
-
-        """
-
-        # There are two code paths into this function:
-        # - When updating an already initialized config
-        # - When validating a config file (validate_cfg_file)
-
-
-        # Convert any dotted sections into dict hierarchies (and merge where appropriate)
-        cfdict = _unflatten_dict(cfdict)
-
-        # Use "one-level-up" as a default value
-        # So if there is no "pckg.colors" section, but there is a "colors" section,
-        # use "colors" for "pckg.colors", if pckg expects that section.
-        for fieldnm, field in self.__fields__.items():
-            # Having Union[ValConfig, other type(s)] could break the logic of the next test; since we have no use case, just detect, warn and exit
-            # if isinstance(field.type_, _UnionGenericAlias):  ≥3.9
-            if str(field.type_).startswith("typing.Union"):
-                if any((isinstance(T, type) and issubclass(T, ValConfig))
-                       for T in field.type_.__args__):
-                    raise TypeError("Using a subclass of `ValConfig` inside a Union is not supported.")
-            elif isinstance(field.type_, type) and issubclass(field.type_, ValConfig):
-                if fieldnm not in cfdict:
-                    cfdict[fieldnm] = {}
-                else:
-                    assert isinstance(cfdict[fieldnm], dict), f"Configuration field '{fieldnm}' should be a dictionary."  # Must be mutable
-                subcfdict = cfdict[fieldnm]
-                for subfieldnm, subfield in field.type_.__fields__.items():
-                    if subfieldnm not in subcfdict and subfieldnm in cfdict:
-                        # A field is missing, and a plausible default is available
-                        # QUESTION: Should we make a (deep) copy, in case two validating configs make conflicting changes ?
-                        subcfdict[subfieldnm] = cfdict[subfieldnm]
-
-                # If we didn’t add anything, remove the blank dictionary
-                if len(cfdict[fieldnm]) == 0:
-                    del cfdict[fieldnm]
-            elif ( fieldnm not in cfdict
-                   and "DEFAULT" in cfdict
-                   and isinstance(cfdict["DEFAULT"], Mapping)
-                   and fieldnm in cfdict["DEFAULT"] ):
-                # configparser convention: Use DEFAULT as a special section for default values
-                cfdict[fieldnm] = cfdict["DEFAULT"][fieldnm]
-
-        if self.__valconfig_initialized__:
-            # Config has already been initialized => validate fields by setting them
-            # NOTE: This relies on `validate_assignment = True`
-            recursively_validate(self, cfdict)
-        else:
-            # TODO: Make & use a recursive version of temp_match_attr ?
-            # We are initializing => Use __init__ to validate values
-            # First update the __current_root__ of any nested ValConfig classes
-            # Also set __initialized__ state back to False, so paths are resolved appropriately – see `resolve_path()`
-            cur_roots = {name: (field.type_.__valconfig_current_root__,
-                                field.type_.__valconfig_parsing_default__)
-                         for name, field in self.__fields__.items()
-                         if hasattr(field.type_, "__valconfig_current_root__")}
-            for name in cur_roots:
-                self.__fields__[name].type_.__valconfig_current_root__ = self.__valconfig_current_root__
-                self.__fields__[name].type_.__valconfig_parsing_default__ = self.__valconfig_parsing_default__
-            # Initialize values
-            super().__init__(**cfdict)
-            # Reset __current_root__ of nested classes
-            for name, (old_root, old_parsing) in cur_roots.items():
-                self.__fields__[name].type_.__valconfig_current_root__ = old_root
-                self.__fields__[name].type_.__valconfig_parsing_default_ = old_parsing
-
-    ## Validators ##
-
-    # @validator("*")
-    # def prepend_rootdir(cls, val):
-    #     """Prepend any relative path with the current root directory."""
-    #     if isinstance(val, Path):
-    #         val = cls.resolve_path(val)
-    #     return val
-
-    @validator("*", pre=True)
-    def reset_default(cls, val, field):
-        """Allow to use defaults in the BaseModel definition.
-
-        Config models can define defaults. To allow config files to specify
-        that we want to use the hardcoded default, we interpret the string value
-        ``"<default>"`` to mean to use the hardcoded default.
-        """
-        if val == "<default>":
-            return field.default  # NB: If no default is set, this returns `None`
-        else:
-            return val
-
-    @validator("*", pre=True)
-    def value_substitutions(cls, val):
-        try:
-            return cls.__value_substitutions__[val]
-        except (TypeError, KeyError):
-            # TypeError: When `val` is not hashable
-            # KeyError: When `val` is not in the dictionary
-            return val
-
-    # Validator utility
+    # This methods is called manually from __init__
+    # We could _almost_ achieve this by making it the first model_validator, except that
+    # does not allow the Config object to be instantiated with missing arguments,
+    # even if they would be defined in the config files
     @classmethod
-    def resolve_path(cls, path: Path):
+    def load_config_files(cls) -> SourcedChainMap:
         """
-        There are different contexts for a relative path specified in a
-        config file, each with a different "obvious" resolution.
-        This function considers the following situations:
-
-        - Absolute paths are never modified.
-        - Relative paths specified in a user-local config file should always be
-          relative to that config file.
-        - Relative *input* paths specified in a default config file should be
-          relative to that config file. For example, a matplotlib style file
-          might be packaged with the default config.
-        - Relative *output* paths specified in a default config file should be
-          relative to the *current directory*.
-          For example, a path for storing produced figures. This should definitely
-          not be relative to the default config file, which will likely be buried
-          under some external package (very possibly under a `site-packages` 
-          the user will never look into.)
-
-        We use two heuristics to differentiate between cases, which should be
-        reliable unless users intentionally break their assumptions:
-
-        - If the `root/path` concatenation exists => Assume an input path.
-          (Broken if a file or directory is added to this location manually.)
-        - SPECIAL CASE: If `path` is simply "." and the current root is the
-          default config => Always resolve relative to current directory,
-          independent of whether it is an input or output path.
-          (It would always exists, since the default config exists, but we
-          expect that most of the time this would be meant as an output path.)
+        Load default values from the configuration files, and extend `data`
+        with them. (Taking care not to overwrite existing fields in `data`.)
+        This assumes that `data` is a dictionary.
         """
-        if isinstance(path, str):
-            path = Path(path)
-        else:
-            assert isinstance(path, Path), "`resolve_path` expects a Path or a str."
-        if not path.is_absolute():
-            root = cls.__valconfig_current_root__
-            if root:
-                # NB: __valconfig_initialized__ is set to False exactly after we have
-                #     set any default values in the class itself or a default config file
-                # if not cls.__valconfig_initialized__:
-                if cls.__valconfig_parsing_default__:
-                    if str(path) == "." or not (root/path).exists():
-                        root = os.getcwd()
-                # path_in_default_config = (root == cls.__default_config_path__.parent)
-                # if path_in_default_config and str(path) == ".": # Special case
-                #     output_path = True
-                # else:
-                #     output_path = not (root/path).exists()
-                # if path_in_default_config and output_path:
-                #     root = os.getcwd()
-                path = root/path
-        return path
 
-    ## User config template ##
+        config_dicts = SourcedChainMap()  # Stores data from each config file
+        # NB: ChainMap precedence goes left to right
+        #     `new_child` adds dictionaries to the left (i.e. gives them higher precedence)
 
-    def add_user_config_if_missing(
-        self,
-        path_default_config: Union[str,Path],
-        path_user_config: Union[str,Path],
-        ):
+        # If package provides a defaults file, it will be colocated in the same directory under the name defined by __default_config_path__
+        # NB: This MIGHT NOT be under the current directory, especially if the package was installed to a `site_packages` folder.
+        #     Relative paths should be interpreted as relative to the directory containing the config file
+        if cls.__default_config_path__:
+            module = sys.modules.get(cls.__module__)
+            configdir = (Path.cwd() if module.__name__ == "__main__"
+                         else Path(module.__file__).parent)
+            if (p := configdir / cls.__default_config_path__).exists():
+                with open(p, 'rb') as f:
+                    config_dicts = config_dicts.new_child(tomllib.load(f), source=p)
+
+        # Locate any local configurations:
+        # Starting from the current directory, search for config files named 'local.toml'
+        # in the hierarchy.
+        local_paths = []
+        d = Path.cwd()
+        projectroot = None
+        try:
+            homedir = Path.home()
+        except RuntimeError:
+            homedir = None
+        while not projectroot:
+            for p in d.iterdir():
+                if p.name == cls.__local_config_filename__:
+                    local_paths.append(p)
+                    logger.info(f"Appended '{p}' to local config files")
+                if p.name in cls.__projectroot_filenames__:
+                    projectroot = d  # Will terminate while loop
+                    logger.info(f"Project root is '{d}'")
+            if len(d._tail) == 0 or d == homedir:   # Fallback if there is no .git in the hierarchy and we reach the root or home directory
+                logger.info(f"No project root found. `projectroot` is '{projectroot}'")
+                break                               # Break while loop but don’t set 'projectroot'
+            d = d.parent
+
+        # Now load all the config files, from lowest to highest precedence
+        for local_path in local_paths:
+            with open(local_path, 'rb') as f:
+                config_dicts = config_dicts.new_child(tomllib.load(f), source=local_path)
+
+        return config_dicts, projectroot
+
+    @model_validator(mode="before")
+    @classmethod
+    def replace_default(cls, data: SourcedChainMap, info: ValidationInfo):
+        for nm, val in data.items():
+            if val in cls.__default_value_markers__:
+                field = cls.model_fields[nm]
+                if field is not PydanticUndefined:
+                    data[nm] = field.default
+                else:
+                    data[nm] = info.context.sourced_data.reversed_get(nm)
+                if data[nm] in cls.__default_value_markers__:
+                    raise MissingDefaultError(f"Field {nm} requested to use the default value, but no default value is defined.")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def replace_sentinels(cls, data: SourcedChainMap):
+        """Replace sentinel values by their definition in __setinel_substitutions__
         """
-        If the user-editable config file does not exist, create it.
-
-        Basic instructions are added as a comment to the top of the file.
-        Their content is determined by the class variable `__top_message_default__`.
-        The message variable can contain `format` fields matching two names:
-        `package_name` and `config_module_name`. These are inferred from
-        self.__module__ and self.__file__ respectively.
-
-        Parameters
-        ----------
-        path_default_config: Path to the config file providing defaults.
-            *Should* be version-controlled
-        path_user_config: Path to the config file a user would modify.
-            Should *not* be version-controlled
-        """
-        # Determine the dynamic fields for the info message added to the top
-        # of the template config
-        config_module_name = self.__module__
-        package_name, _    = self.__module__.split(".", 1)
-            # If the ValConfig subclass is defined in ``mypkg.config.__init__.py``, this will return ``mypkg``.
-        config_class_name  = type(self).__qualname__
-
-        top_message = self.__top_message_default__
-        # Remove any initial newlines from `top_message`
-        for i, c in enumerate(top_message):
-            if c != "\n":
-                top_message = top_message[i:]
-                break
-        # Finish formatting top message
-        top_message = textwrap.dedent(
-            top_message.format(package_name=package_name,
-                               config_module_name=config_module_name,
-                               config_class_name=config_class_name))
-
-        if not Path(path_user_config).exists():
-            # The user config file does not yet exist – create it, filling with
-            # commented-out values from the defaults
-            with open(path_default_config, 'r') as fin:
-                with open(path_user_config, 'x') as fout:
-                    fout.write(textwrap.dedent(top_message))
-                    stashed_lines = []  # Used to delay the printing of instructions until after comments
-                    skip = True         # Used to skip copying the top message from the defaults file
-                    for line in fin:
-                        line = line.strip()
-                        if skip:
-                            if not line or line[0] == "#":
-                                continue
-                            else:
-                                # We've found the first non-comment, non-whitespace line: stop skipping
-                                skip = False
-                        if not line:
-                            fout.write(line+"\n")
-                        elif line[0] == "[":
-                            fout.write(line+"\n")
-                            stashed_lines.append("# # Defaults:\n")
-                        elif line[0] == "#":
-                            fout.write("# "+line+"\n")
-                        else:
-                            for sline in stashed_lines:
-                                fout.write(sline)
-                            stashed_lines.clear()
-                            fout.write("# "+line+"\n")
-            logger.warning(f"A default project config file was created at {path_user_config}.")
+        for nm, val in data.items():
+            if val in cls.__sentinel_substitutions__:
+                data[nm] = cls.__sentinel_substitutions__[val]
+        return data
 
 
-## Convenience validators ##
-
-def ensure_dir_exists(cls, dirpath):
-    if dirpath:
-        os.makedirs(dirpath, exist_ok=True)
-    return dirpath
-
-## Utilities ##
-
-def _unflatten_dict(d: Mapping) -> defaultdict:
-    """Return a new dict where dotted keys become nested dictionaries.
-
-    For example, ``{"a.b.c.d": 3}`` becomes
-    ``{"a": {"b": {"c": {"d": 3}}}}``
-
-    Keys are sorted before unflattening, so the order of items in `d` does not matter.
-    Precedence is given to later, more specific keys. For example, the following
-    dictionary::
-
-       {"a": {"b1": 1, "b2": {"c": 3}},
-        "a.b1": 10,
-        "a.b2": {"c": 30},
-        "a.b2.c": 300
-        }
-
-    would become::
-
-       {"a": {"b1": 10, "b2": {"c": 300}}}
-
-    Note how in this example we used::
-
-        "a.b2": {"c": 30},
-
-    All intermediate levels must be dictionaries, even if those values are
-    ultimately not used. Otherwise an `AssertionError` is raised.
-
-    """
-    def new_obj(): return defaultdict(new_obj)
-    obj = new_obj()
-
-    # Logic inspired by https://github.com/mewwts/addict/issues/117#issuecomment-756247606
-    for k in sorted(d.keys()):  # Use sorted keys for better reproducibility
-        v = d[k]
-        subks = k.split('.')
-        last_k = subks.pop()
-        _obj = obj
-        for i, _k in enumerate(subks):
-            try:
-                _obj = _obj[_k]
-            except KeyError:  # We can end up here if `obj[_k]` already exists but is not a default dict
-                _obj[_k] = new_obj()
-                _obj = _obj[_k]
-            assert isinstance(obj, Mapping), \
-                f"Configuration field '{'.'.join(subks[:i+1])}' should be a dictionary."
-        # NB: Don't unflatten value dictionaries, otherwise we can't have configs
-        #     like those in matplotlib: {'figure.size': 6}
-        _obj[last_k] = v
-
-    return obj
-
-def recursively_validate(model: Union[BaseModel,ValConfig],
-                         newvals: dict):
-    for key, val in newvals.items():
-        # `newvals` may specify invalid fields – e.g. a DEFAULT section,
-        # or generic fields from a fallback field.
-        # If they don’t match a config field, ignore them.
-        if key not in model.__fields__:
-            continue
-        # If `val` is a Mapping, we want to assign it recursively
-        # if the field is a nested Config.
-        if isinstance(val, Mapping):
-            cur_val = getattr(model, key, None)
-            # Two ways to identify nested Config: has `validate_dict` method
-            cur_val_validate_dict = getattr(cur_val, "validate_dict", None)
-            if isinstance(cur_val_validate_dict, Callable):  # If `cur_val` is a addict.Dict, accessing a non-existing attribute returns an empty dict
-                with temp_match_attr(type(cur_val), type(model), "__valconfig_current_root__"):
-                    cur_val_validate_dict(val)
-                # # Preliminary: Assign a value to __valconfig_current_root__, so paths can be resolved
-                # if ( hasattr(type(cur_val), "__valconfig_current_root__")
-                #      and hasattr(type(model), "__valconfig_current_root__") ):
-                #     _old_root = cur_val.__valconfig_current_root__
-                #     type(cur_val).__valconfig_current_root__ = type(model).__valconfig_current_root__
-                # else:
-                #     _old_root = "SENTINEL VALUE - NO __VALCONFIG_ROOT__"
-                # # Actual validation
-                # cur_val_validate_dict(val)
-                # # Cleanup: Remove value to __valconfig_current_root__
-                # if _old_root != "SENTINEL VALUE - NO __VALCONFIG_ROOT__":
-                #     type(cur_val).__valconfig_current_root__ = _old_root
-            # or is an instance of BaseModel.
-            elif isinstance(cur_val, BaseModel):
-                recursively_validate(cur_val, val)
-            # Anything else is treated as normal data.
-            # Note that we don’t recursively validate plain dicts: it’s not unlikely one would want to replace them with the new value
-            else:
-                setattr(model, key, val)
-        else:
-            setattr(model, key, val)  
+# %%

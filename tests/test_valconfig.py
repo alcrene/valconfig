@@ -2,11 +2,7 @@ import sys
 import pytest
 from pathlib import Path
 import valconfig
-
-# FIXME: For some reason, when pytest runs this file, it cannot find the 
-# `valconfig` package, even when it is installed.
-# So instead we call the test function at the end of the module, and
-# execute it with Python.
+from pydantic import HttpUrl
 
 def test_usage_example():
     from BigProject import config
@@ -14,19 +10,29 @@ def test_usage_example():
     # Values from packaged defaults
     assert config.prefix is None
     assert config.n_units == 3
-    assert config.url == "http://example.com"
+    assert config.url == HttpUrl("http://example.com")
 
     # Values overridden by local.cfg
     assert config.log_name == "Jane"
     assert config.use_gpu == True
     # The data_source path in local.cfg is relative, so it is resolved relative
-    local_root = Path(__file__).parent
+    project_root = Path(__file__).parent
     default_root = Path(sys.modules[config.__module__].__file__).parent
 
-    assert config.data_source         == local_root/"shared-data/BigProject"
-    assert config.default_data_source == default_root/"wordlist.txt"
-    assert config.out_dir             == local_root/"output.dat"
-    assert config.err_dump_path       == local_root
-    assert config.tmp_dir             == Path("/tmp")
+    assert config.data_source.expandprojectroot().resolve()         == project_root/"shared-data/BigProject"
+    assert config.default_data_source.expandprojectroot().resolve() == default_root/"wordlist.txt"
+    assert config.out_dir.expandprojectroot().resolve()             == project_root/"output.dat"
+    assert config.err_dump_path.expandprojectroot().resolve()       == project_root
+    assert config.tmp_dir.expandprojectroot().resolve()             == Path("/tmp")
 
-#test_usage_example()
+# test_usage_example()
+
+def test_singleton():
+    from BigProject.config import config, Config
+
+    conf2 = Config()
+    conf3 = Config(n_units=10)
+
+    assert config is conf2 is conf3
+    assert config.n_units == 10
+
