@@ -576,7 +576,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             d = d.parent
 
         # Now load all the config files, from lowest to highest precedence
-        for local_path in local_paths:
+        for local_path in reversed(local_paths):
             with open(local_path, 'rb') as f:
                 config_dicts = config_dicts.new_child(tomllib.load(f), source=local_path)
 
