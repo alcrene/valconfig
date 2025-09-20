@@ -39,6 +39,8 @@ import logging
 from   collections import ChainMap
 from   collections.abc import Mapping, Iterable
 from   itertools import chain
+import types
+import typing
 from   typing import Union, ClassVar, Optional, Literal, Any, Annotated, NamedTuple
 from   pathlib import Path
 from   warnings import warn
@@ -240,19 +242,22 @@ def _flatten_annotations(ann):
     would do, except that this doesn’t break if `ann` contains Typing objects
     like Optional.
 
-    NB: This is not meant to be 100% robust, and may not behave as expected
-        with more specification type annotations like `Type[]`.
-        Such types however would usually make little sense for parsing
-        a configuration file stored as text.
+    NB: Certain types, like 'str' or GenericaAlias, need to be special cased
+        to avoid iterating into them. 
+        The list of special cases may need to be occasionally updated, but
+        should be manageable.
     """
-    if isinstance(ann, Iterable):
+    # In addition to types, catch Iterable objects we don’t actually want to iterate into
+    if isinstance(ann, (type, str, types.GenericAlias, typing._GenericAlias)):
+        yield ann
+    elif isinstance(ann, Iterable):
         for a in ann:
             yield from _flatten_annotations(a)
     elif hasattr(ann, "__args__"):
         for a in ann.__args__:
             yield from _flatten_annotations(a)
-    elif isinstance(ann, (type, str)):
-        yield ann
+    # If `ann` matches none of the above cases, then we don’t know what to do
+    # with it and it would probably break something downstream, so we discard it.
 
 class ValConfigContext(NamedTuple):
     sourced_data: SourcedChainMap
@@ -296,8 +301,11 @@ class ValConfigMetaclass(type(BaseModel)):
         config_paths_to_validate = []
         # Iterate through annotations, looking for annotations `Path` and `Optional[Path]`
         for name, T in annotations.items():
-            if T in {Path, "Path", Optional[Path], Optional["Path"]}:
+            if T in {Path, "Path"}:
                 annotations[name] = ConfigPath
+                config_paths_to_validate.append(name)
+            elif T in {Optional[Path], Optional["Path"]}:
+                annotations[name] = ConfigPath | None
                 config_paths_to_validate.append(name)
         # Add the required validator for those paths
         validator_name = "parse_configpaths"
@@ -478,15 +486,15 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
               path : pathsType
     """
-    __valconfig_initialized__ : ClassVar = False
-    __valconfig_projectroot__ : ClassVar = None
+    __valconfig_initialized__ : ClassVar[bool]     = False
+    __valconfig_projectroot__ : ClassVar[Path|None]= None
 
-    __default_config_path__   : ClassVar = "defaults.toml"
-    __local_config_filename__ : ClassVar = "local.toml"
-    __projectroot_filenames__ : ClassVar = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})  # If one of these files occurs in a directory, stop searching hierarchy
-    __default_value_markers__ : ClassVar = frozenset({"<default>", "<DEFAULT>"})
+    __default_config_path__   : ClassVar[str]      = "defaults.toml"
+    __local_config_filename__ : ClassVar[str]      = "local.toml"
+    __projectroot_filenames__ : ClassVar[set[str]] = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})  # If one of these files occurs in a directory, stop searching hierarchy
+    __default_value_markers__ : ClassVar[set[str]] = frozenset({"<default>", "<DEFAULT>"})
 
-    __sentinel_substitutions__   : ClassVar = {"<None>": None, "<NONE>": None}
+    __sentinel_substitutions__   : ClassVar[dict[str,Any]] = {"<None>": None, "<NONE>": None}
 
     model_config = dict(validate_default=True,         # Allow use simpler forms in class defaults, like `data_path: Path="/path/to/data"`
                         validate_assignment=True,      # Allow use of simpler forms when updating config values.
@@ -592,7 +600,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     @classmethod
     def replace_default(cls, data: SourcedChainMap, info: ValidationInfo):
         for nm, val in data.items():
-            if val in cls.__default_value_markers__:
+            if isinstance(val, str) and val in cls.__default_value_markers__:
                 field = cls.model_fields[nm]
                 if field is not PydanticUndefined:
                     data[nm] = field.default
@@ -608,7 +616,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
         """Replace sentinel values by their definition in __setinel_substitutions__
         """
         for nm, val in data.items():
-            if val in cls.__sentinel_substitutions__:
+            if isinstance(val, str) and val in cls.__sentinel_substitutions__:
                 data[nm] = cls.__sentinel_substitutions__[val]
         return data
 
