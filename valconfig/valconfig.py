@@ -550,7 +550,13 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                          else Path(module.__file__).parent)
             if (p := configdir / cls.__default_config_path__).exists():
                 with open(p, 'rb') as f:
-                    config_dicts = config_dicts.new_child(tomllib.load(f), source=p)
+                    try:
+                        config_dicts = config_dicts.new_child(tomllib.load(f), source=p)
+                    except tomllib.TOMLDecodeError as e:
+                        msg = f"Unable to parse file with config defaults '{p}'."
+                        if not p.suffix == ".toml":
+                            msg.append(" Are you certain this is a TOML file?")
+                        raise TOMLDecodeError(f"{msg}\nThe original error message was:\n{e}")
 
         # Locate any local configurations:
         # Starting from the current directory, search for config files named 'local.toml'
