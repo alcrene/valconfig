@@ -211,26 +211,34 @@ def parse_configpaths(cls, val: None|str|Path|ConfigPath, info: ValidationInfo) 
     if isinstance(val, Path):
         val = str(val)
     assert isinstance(val, str), f"Not a string (received {val} ({type(val)}) while validating {info.field_name})"
-    assert isinstance(info.context.sourced_data, SourcedChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
-    # Retrieve the source from the validation info
-    data_val, source = info.context.sourced_data.get_with_source(info.field_name)
-    if data_val != val:
-        logger.debug(f"Path for field {info.field_name} was changed: was {data_val}, is now {val}. Data source is set to `None`.")
-        source = None 
-    # Infer the anchor directory from the source value
-    if isinstance(source, Path):
-        # The source will point to the actual config file, while the anchor should be the directory containing that file
-        anchor_dir = source.parent
-    elif source is KWARGS:
-        anchor_dir = None
-    elif not isinstance(source, (str, Path, type(None))):
-        raise ValueError(f"Value for config key '{info.field_name}' has a source of unexpected type ({type(source)}). "
-                         "This is likely an internal error.\n"
-                         f"(Value received was {source})")
+    if info.context:
+        assert isinstance(info.context.sourced_data, SourcedChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
+        # Retrieve the source from the validation info
+        data_val, source = info.context.sourced_data.get_with_source(info.field_name)
+        if data_val != val:
+            logger.debug(f"Path for field {info.field_name} was changed: was {data_val}, is now {val}. Data source is set to `None`.")
+            source = None 
+        # Infer the anchor directory from the source value
+        if isinstance(source, Path):
+            # The source will point to the actual config file, while the anchor should be the directory containing that file
+            anchor_dir = source.parent
+        elif source is KWARGS:
+            anchor_dir = None
+        elif not isinstance(source, (str, Path, type(None))):
+            raise ValueError(f"Value for config key '{info.field_name}' has a source of unexpected type ({type(source)}). "
+                             "This is likely an internal error.\n"
+                             f"(Value received was {source})")
+        else:
+            anchor_dir = source
+        projectroot = info.context.projectroot
     else:
-        anchor_dir = source
+        # If context is empty, we are probably validating a field assignment
+        # There is no particular anchor directory,
+        # but the projectroot class attribute should already be set
+        anchor_dir = None
+        projectroot = cls.__valconfig_projectroot__
     # Create the ConfigPath
-    return ConfigPath(val, anchor_dir=anchor_dir, projectroot=info.context.projectroot)
+    return ConfigPath(val, anchor_dir=anchor_dir, projectroot=projectroot)
 
 # %%
 
