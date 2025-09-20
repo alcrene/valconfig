@@ -523,6 +523,10 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     def __dir__(self):
         return list(self.__fields__)
 
+    @property
+    def projectroot(self):
+        return self.__valconfig_projectroot__
+
     ## Initialization ##
 
     def __init__(self, **kwargs):
