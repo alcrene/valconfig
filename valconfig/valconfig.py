@@ -576,7 +576,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                         msg = f"Unable to parse file with config defaults '{p}'."
                         if not p.suffix == ".toml":
                             msg.append(" Are you certain this is a TOML file?")
-                        raise TOMLDecodeError(f"{msg}\nThe original error message was:\n{e}")
+                        raise tomllib.TOMLDecodeError(f"{msg}\nThe original error message was:\n{e}")
 
         # Locate any local configurations:
         # Starting from the current directory, search for config files named 'local.toml'
