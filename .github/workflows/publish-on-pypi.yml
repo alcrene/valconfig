@@ -10,19 +10,24 @@ run-name: ${{ github.actor }} is publishing the latest release on PyPI
 # Run job by triggering it manually with the web UI: https://docs.github.com/en/actions/using-workflows/manually-running-a-workflow#running-a-workflow
 on: workflow_dispatch
 jobs:
+
+
+  build:
+    uses: ./.github/workflows/build.yml
+
+
   pypi-publish:
     name: Upload release to PyPI
+    needs: build
     runs-on: ubuntu-latest
     environment: release
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: release-build
           path: dist/
-          github-token: ${{ secrets.GH_PAT }}
-          run-id: ${{ vars.BUILD_RUN_ID }}
 
       - name: Display structure of downloaded files
         run: ls -R

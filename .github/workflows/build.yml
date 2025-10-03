@@ -1,6 +1,7 @@
 # https://docs.pypi.org/trusted-publishers/using-a-publisher/
 # https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
 # https://stackoverflow.com/questions/62968271/python-automatic-versioning-not-happening-while-running-in-github-actions
+# https://victoronsoftware.com/posts/github-reusable-workflows-and-steps/
 
 name: Build Python package
 run-name: ${{ github.actor }} is building the Python package
@@ -11,6 +12,7 @@ on:
   release:
     types: [released]
   workflow_dispatch:
+  workflow_call:
 
 jobs:
 
@@ -21,7 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 100
+          fetch-tags: true
 
       # Get the latest commit with a semver tag
       # This allows re-running the build job even after further unclean commits were made:
@@ -31,21 +34,22 @@ jobs:
       # so it would prevent from building release candidate versions.
       # By setting to `false`, we make the assumption that tags are only used on
       # commits which correspond to releases.
-      - uses: actions-ecosystem/action-get-latest-tag@v1
-        id: get-latest-tag
-        with:
-          semver_only: false
+      # - uses: actions-ecosystem/action-get-latest-tag@v1
+      #   id: get-latest-tag
+      #   with:
+      #     semver_only: false
 
       # https://stackoverflow.com/a/73904531
       - name: Checkout latest tagged release
         run: |
-          echo "Restoring state to the commit tagged '${{ steps.get-latest-tag.outputs.tag }}'"
-          git checkout "tags/${{ steps.get-latest-tag.outputs.tag }}"
+          latesttag=$(git describe --tags --abbrev=0 --match "v*")
+          echo "Restoring state to the commit tagged '$latesttag'"
+          git switch --detach "tags/$latesttag"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install pypa/build
         run: >-
