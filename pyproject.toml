@@ -32,7 +32,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic",
-    "addict"     # Only used in contrib.holoviews
+    # "addict"     # Only used in contrib.holoviews
 ]
 dynamic = ["version"]
 
