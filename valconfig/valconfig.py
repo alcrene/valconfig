@@ -189,6 +189,9 @@ class ConfigPath(Path):
             pathsegments = (drv, root, *tail, *pathsegments)
         super().__init__(*pathsegments)
 
+    def with_segments(self, *pathsegments):
+        return type(self)(*pathsegments, projectroot=self.projectroot)
+
     def expandprojectroot(self, projectroot=None, projectrootmarkers=None):
         """ Return a new path with the project root marker (defined by __projectroot_marker__)
         replaced by the value of ``os.path.expanduser(self.projectroot)``.
@@ -212,17 +215,20 @@ def parse_configpaths(cls, val: None|str|Path|ConfigPath, info: ValidationInfo) 
     This validator is added to the ValConfig for every field of type `Path`.
     """
     # Normalization
-    if val is None or isinstance(val, ConfigPath):
+    if val is None:
         return val
-    if isinstance(val, Path):
-        val = str(val)
-    assert isinstance(val, str), f"Not a string (received {val} ({type(val)}) while validating {info.field_name})"
+    elif isinstance(val, (Path,str)):
+        str_val = str(val)
+    else:
+        raise TypeError(f"Value is neither a string nor a Path (received {val} ({type(val)}) while validating {info.field_name})")
+
+    # Determine anchor_dir and projectroot
     if info.context:
         assert isinstance(info.context.sourced_data, SourcedChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
         # Retrieve the source from the validation info
         data_val, source = info.context.sourced_data.get_with_source(info.field_name)
-        if data_val != val:
-            logger.debug(f"Path for field {info.field_name} was changed: was {data_val}, is now {val}. Data source is set to `None`.")
+        if data_val != str_val:
+            logger.debug(f"Path for field {info.field_name} was changed: was {data_val}, is now {str_val}. Data source is set to `None`.")
             source = None 
         # Infer the anchor directory from the source value
         if isinstance(source, Path):
@@ -243,8 +249,13 @@ def parse_configpaths(cls, val: None|str|Path|ConfigPath, info: ValidationInfo) 
         # but the projectroot class attribute should already be set
         anchor_dir = None
         projectroot = cls.__valconfig_projectroot__
-    # Create the ConfigPath
-    return ConfigPath(val, anchor_dir=anchor_dir, projectroot=projectroot)
+
+    # Create or update the ConfigPath
+    if isinstance(val, ConfigPath):
+        if val.projectroot is None: val.projectroot = projectroot
+    else:
+        val = ConfigPath(str_val, anchor_dir=anchor_dir, projectroot=projectroot)
+    return val
 
 # %%
 
