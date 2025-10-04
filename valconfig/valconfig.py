@@ -520,8 +520,8 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     __valconfig_initialized__ : ClassVar[bool]     = False
     __valconfig_projectroot__ : ClassVar[Path|None]= None
 
-    __default_config_path__   : ClassVar[str]      = "defaults.toml"
-    __local_config_filename__ : ClassVar[str]      = "local.toml"
+    __default_config_path__   : ClassVar[str|None] = "defaults.toml"
+    __local_config_filename__ : ClassVar[str|None] = "local.toml"
     __projectroot_filenames__ : ClassVar[set[str]] = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})  # If one of these files occurs in a directory, stop searching hierarchy
     __default_value_markers__ : ClassVar[set[str]] = frozenset({"<default>", "<DEFAULT>"})
 
@@ -554,31 +554,36 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
     def __init__(self, **kwargs):
         if self.__valconfig_initialized__:
-            config_data = SourcedChainMap()
+            # config_data = SourcedChainMap()
             projectroot = self.__class__.__valconfig_projectroot__
-        else:
-            config_data, projectroot = self.load_config_files()
-            self.__class__.__valconfig_projectroot__ = projectroot
+            # TODO: Is there a better way to update multiple fields at once, without validating the whole lot?
+            #       (Calling model_validate() or validate_python() would check that `data` is a complete spec, which is not what we want)
+            for key, val in kwargs.items():
+                setattr(key, val)
+            return
+
+        # At this point we know that this is the object’s true initialization, and not just a value update
+        config_data, projectroot = self.load_config_files()
+        self.__class__.__valconfig_projectroot__ = projectroot
         data = config_data.new_child(kwargs, source=KWARGS)
 
         # Merge the nested dictionaries for nested ValConfigs into their own SourcedChainMap()
-        if not self.__valconfig_initialized__:  # TODO: Merge with conditional above. Note that we don’t want to unnecessarily instantiate types, in case they require args (which might be in `data`)
-            cfgs = {}
-            for nm, info in self.model_fields.items():
-                T = info.annotation
-                if not info.is_required(): continue
-                if not isinstance(T, type) or not issubclass(T, ValConfig): continue
-                if nm not in data:
-                    try:
-                        cfgs[nm] = T()  # Instantiate with default params, which may retrieve an already initialized instance thanks to singleton pattern
-                    except ValidationError as e:
-                        if misspell := {_nm.lower():_nm for _nm in data}.get(nm.lower(), None):
-                            raise ValueError(f"Validation for the nested configuration '{nm}' failed. "
-                                             f"Is it possible you wrote '{misspell}' instead of '{nm}' in your config file?"
-                                             ) from e
-                        raise e
-            if cfgs:
-                data = data.new_child(cfgs, source=IMPLICIT)
+        cfgs = {}
+        for nm, info in self.model_fields.items():
+            T = info.annotation
+            if not info.is_required(): continue
+            if not isinstance(T, type) or not issubclass(T, ValConfig): continue
+            if nm not in data:
+                try:
+                    cfgs[nm] = T()  # Instantiate with default params, which may retrieve an already initialized instance thanks to singleton pattern
+                except ValidationError as e:
+                    if misspell := {_nm.lower():_nm for _nm in data}.get(nm.lower(), None):
+                        raise ValueError(f"Validation for the nested configuration '{nm}' failed. "
+                                         f"Is it possible you wrote '{misspell}' instead of '{nm}' in your config file?"
+                                         ) from e
+                    raise e
+        if cfgs:
+            data = data.new_child(cfgs, source=IMPLICIT)
 
         # Calling the validator manually allows us to load the config files before checking for missing arguments.
         # Passing the data as a context allows individual validators to check the original source to resolve relative paths
@@ -587,6 +592,11 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             self_instance=self,
             context=ValConfigContext(sourced_data=data, projectroot=projectroot)
         )
+
+        # Mark this class as initialized, so that further instantiations will
+        # not try to reload from disk (they will only update with keyword values, if any)
+        type(self).__valconfig_initialized__ = True
+
 
     # This methods is called manually from __init__
     # We could _almost_ achieve this by making it the first model_validator, except that
@@ -686,8 +696,8 @@ class NestedValConfig(ValConfig):
     to prevent the nested Config from duplicating the search through the file
     tree.
     """
-    __default_config_path__   : ClassVar[str]      = "defaults.toml"
-    __local_config_filename__ : ClassVar[str]      = "local.toml"
+    __default_config_path__   : ClassVar[str|None] = None
+    __local_config_filename__ : ClassVar[str|None] = None
 
 
 
