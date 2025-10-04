@@ -33,10 +33,14 @@ https://github.com/alcrene/valconfig
 """
 # %%
 
+# TODO: Should we prevent nested valconfigs from searching the directory tree
+#       for projectroot? It seems wasteful; we should be able to search
+#       once and use the value everywhere.
+
 import sys
 import os
 import logging
-from   collections import ChainMap
+from   collections import ChainMap, OrderedDict
 from   collections.abc import Mapping, Iterable
 from   itertools import chain
 import types
@@ -46,13 +50,13 @@ from   pathlib import Path
 from   warnings import warn
 import tomllib
 
-from pydantic import (BaseModel, Field, ValidationInfo, 
+from pydantic import (BaseModel, Field, ValidationInfo, ValidationError,
                       model_validator, field_validator)
 from pydantic.main import PydanticUndefined
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConfigPath", "ValConfig"]
+__all__ = ["ConfigPath", "ValConfig", "NestedValConfig"]
 
 # Module constants
 _config_instances = {}
@@ -306,7 +310,7 @@ class ValConfigMetaclass(type(BaseModel)):
                     ...
 
         """
-        annotations = namespace.get("__annotations__", {})
+        annotations = OrderedDict(namespace.get("__annotations__", {}))
         annotation_types = {nm: set(_flatten_annotations(ann)) for nm, ann in annotations.items()}
         config_paths_to_validate = []
         # Iterate through annotations, looking for annotations `Path` and `Optional[Path]`
@@ -335,44 +339,61 @@ class ValConfigMetaclass(type(BaseModel)):
 
         # Convert any bare subclasses to ValConfig subclasses
         # and create a corresponding attribute
+        # NB: The annotation order is important, because it determines the order in which
+        #     fields are validated. Ideally we would insert annotations exactly where
+        #     the nested class was defined, but this is not possible since namespace
+        #     and annotations are effectively separate dictionaries.
+        #     So instead we insert new annotations at the _start_ of the annotations
+        #     dictionary: This allows any other annotations to refer to those types.
+        #     (The only case where this might be a problem would be if the user
+        #     defines a validator in the outer class for the automatically created
+        #     inner one. In that case the nested class can just explicitly subclass BaseModel.)
+        # NB: The order of items in the namespace should be less important, but
+        #     we still preserve it.
         all_annotation_types = set(chain.from_iterable(annotation_types.values()))
         attribute_types = set(type(v) for v in namespace.values())
+        namespace_names = list(namespace)
         nested_classes = {nm: val for nm, val in namespace.items()
                           if isinstance(val, type) and nm not in {"Config", "__config__"}}
-        namespace_without_classes = {nm: val for nm, val in namespace.items()
-                                     if nm not in nested_classes}
-        new_nested_classes = {}
-        for nm, T in nested_classes.items():
-            # If a declared type was used, don't touch it or its name, and don't create an associated attribute
-            if T in all_annotation_types | attribute_types:
-                new_nested_classes[nm] = T
+        namespace_without_classes = namespace.keys() - nested_classes.keys()
+        new_namespace = {}
+        new_annotations = OrderedDict()
+        for nm, T in namespace.items():
+            # If `T` is not a nested type, skip
+            # Also, if it is a declared type, don't touch it or its name, and don't create an associated attribute
+            if not nm in nested_classes or T in all_annotation_types | attribute_types:
+                new_namespace[nm] = T
                 continue
             # Otherwise, append `Type` to the name, to free the name itself for an annotation
             # NB: This only renames the nested attribute, not the type itself
             new_nm = nm + "Type"
-            if new_nm in annotations.keys() | namespace_without_classes.keys():
+            if new_nm in annotations.keys() | namespace_without_classes:
                 new_nm = nm  # Conflict -> no rename
             # If it isn't already a subclass of BaseModel, make it one
             if T.__bases__ == (object,):
                 copied_attrs = {nm: attr for nm, attr in T.__dict__.items()
                                 if nm not in {'__dict__', '__weakref__', '__qualname__', '__name__'}}
-                newT = ValConfigMetaclass(nm, (ValConfig,), copied_attrs)
+                # Prevent nested configs from performing their own separate search for config files
+                newT = ValConfigMetaclass(nm, (NestedValConfig,), copied_attrs)
             else:
                 if not issubclass(T, ValConfig):
                     logger.warning(f"For the nested Config class '{T.__qualname__}' "
                                    "to be automatically converted to a subclass of `BaseModel`, "
                                    "it must not inherit from any other class.")
                 newT = T
-            new_nested_classes[new_nm] = newT
+            new_namespace[new_nm] = newT
             # Add a matching annotation
             if new_nm != nm:  # Ensure we aren't overwriting the type
-                annotations[nm] = newT
+                new_annotations[nm] = newT
+
+        for nm, T in reversed(new_annotations.items()):
+            annotations[nm] = newT
+            annotations.move_to_end(nm, last=False)
 
         # Now we can let Pydantic parse the updated class
         return super().__new__(meta, clsname, bases,
-                               {**namespace_without_classes,
-                                **new_nested_classes,
-                                '__annotations__': annotations,
+                               {**new_namespace,
+                                '__annotations__': dict(annotations),  # Convert ordereddict back to more efficient dict
                                 '__valconfig_initialized__': False})
 
 
@@ -548,7 +569,14 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                 if not info.is_required(): continue
                 if not isinstance(T, type) or not issubclass(T, ValConfig): continue
                 if nm not in data:
-                    cfgs[nm] = T()  # Instantiate with default params, which may retrieve an already initialized instance thanks to singleton pattern
+                    try:
+                        cfgs[nm] = T()  # Instantiate with default params, which may retrieve an already initialized instance thanks to singleton pattern
+                    except ValidationError as e:
+                        if misspell := {_nm.lower():_nm for _nm in data}.get(nm.lower(), None):
+                            raise ValueError(f"Validation for the nested configuration '{nm}' failed. "
+                                             f"Is it possible you wrote '{misspell}' instead of '{nm}' in your config file?"
+                                             ) from e
+                        raise e
             if cfgs:
                 data = data.new_child(cfgs, source=IMPLICIT)
 
@@ -646,6 +674,21 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             if isinstance(val, str) and val in cls.__sentinel_substitutions__:
                 data[nm] = cls.__sentinel_substitutions__[val]
         return data
+
+
+# %%
+
+class NestedValConfig(ValConfig):
+    """
+    A variant of ValConfig meant to be used as part of a larger Config object.
+    Concretely all this does is change the default values of 
+    ``__default_config_path__`` and ``__local_config_filename__`` to ``None``
+    to prevent the nested Config from duplicating the search through the file
+    tree.
+    """
+    __default_config_path__   : ClassVar[str]      = "defaults.toml"
+    __local_config_filename__ : ClassVar[str]      = "local.toml"
+
 
 
 # %%
