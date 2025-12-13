@@ -389,7 +389,7 @@ class ValConfigMetaclass(type(BaseModel)):
             else:
                 if not issubclass(T, ValConfig):
                     logger.warning(f"For the nested Config class '{T.__qualname__}' "
-                                   "to be automatically converted to a subclass of `BaseModel`, "
+                                   "to be automatically converted to a subclass of `ValConfig`, "
                                    "it must not inherit from any other class.")
                 newT = T
             new_namespace[new_nm] = newT
@@ -398,7 +398,7 @@ class ValConfigMetaclass(type(BaseModel)):
                 new_annotations[nm] = newT
 
         for nm, T in reversed(new_annotations.items()):
-            annotations[nm] = newT
+            annotations[nm] = T
             annotations.move_to_end(nm, last=False)
 
         # Now we can let Pydantic parse the updated class
