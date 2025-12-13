@@ -571,7 +571,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             # TODO: Is there a better way to update multiple fields at once, without validating the whole lot?
             #       (Calling model_validate() or validate_python() would check that `data` is a complete spec, which is not what we want)
             for key, val in kwargs.items():
-                setattr(key, val)
+                setattr(self, key, val)
             return
 
         # At this point we know that this is the object’s true initialization, and not just a value update
@@ -610,7 +610,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
         type(self).__valconfig_initialized__ = True
 
 
-    # This methods is called manually from __init__
+    # This method is called manually from __init__
     # We could _almost_ achieve this by making it the first model_validator, except that
     # does not allow the Config object to be instantiated with missing arguments,
     # even if they would be defined in the config files
@@ -640,7 +640,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                     except tomllib.TOMLDecodeError as e:
                         msg = f"Unable to parse file with config defaults '{p}'."
                         if not p.suffix == ".toml":
-                            msg.append(" Are you certain this is a TOML file?")
+                            msg += " Are you certain this is a TOML file?"
                         raise tomllib.TOMLDecodeError(f"{msg}\nThe original error message was:\n{e}")
 
         # Locate any local configurations:
