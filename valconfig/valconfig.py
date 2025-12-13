@@ -555,7 +555,8 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
     ## Interface ##
     def __dir__(self):
-        return list(self.__fields__)
+        """Return the model fields and non-private class attributes."""
+        return sorted(self.model_fields.keys() | {attr for attr in type(self).__dict__ if not attr.startswith("_")})
 
     @property
     def projectroot(self):
