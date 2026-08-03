@@ -54,6 +54,8 @@ from pydantic import (BaseModel, Field, ValidationInfo, ValidationError,
                       model_validator, field_validator)
 from pydantic.main import PydanticUndefined
 
+from deep_chainmap import DeepChainMap
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["ConfigPath", "ValConfig", "NestedValConfig"]
@@ -86,7 +88,7 @@ class SourcedChainMap(ChainMap):
     typical source types might be a string or a file path.
 
     CAUTION: Although the `maps` and `sources` attribute are mutable
-          (as `maps` is in the base ChainMap), they must be kept in synced:
+          (as `maps` is in the base ChainMap), they must be kept synced:
           any addition/removal to one must be applied to the other.
           So mutating the internal structure is not as safe as with ChainMap.
     TODO: Currently, modifications happen on the leftmost dict, so those data
@@ -141,6 +143,24 @@ class SourcedChainMap(ChainMap):
     def __ror__(self, other):
         raise NotImplementError("TODO")
 
+# %%
+
+class SourcedDeepChainMap(SourcedChainMap, DeepChainMap):
+    __doc__ = SourcedChainMap.__doc__ + """
+
+    A Sourced*Deep*ChainMap is the same, except that it subclasses
+    `DeepChainMap` (`deep-chainmap` on PyPI) instead of the stdlib `ChainMap`.
+    This allows combining fields from a nested dictionary.
+
+    For example, if the maps of ``D`` are, in order of precedence,
+
+        [{A: {a: _}}, {A: {a: _, b: _}}]
+
+    then ``D[A][b]`` will fail if ``D`` is a `SourcedChainMap`, but will
+    succeed if it is a `SourcedDeepChainMap`.
+    """
+    pass
+
 
 # %%
 
@@ -192,9 +212,34 @@ class ConfigPath(Path):
     def with_segments(self, *pathsegments):
         return type(self)(*pathsegments, projectroot=self.projectroot)
 
-    def expandprojectroot(self, projectroot=None, projectrootmarkers=None):
-        """ Return a new path with the project root marker (defined by __projectroot_marker__)
+    def expandprojectroot(self, projectroot=None, projectrootmarkers=None, *, expand_user=True):
+        """Return a new path with the project root marker (defined by __projectroot_marker__)
         replaced by the value of ``os.path.expanduser(self.projectroot)``.
+
+        For consistency, if the path does not contain a project root marker,
+        then `expanduser` is called on the path itself.
+        Thus a subsequent call to `expanduser` is always redundant.
+
+        For the rare cases where you want to expand the project root but *not*
+        the user marker, pass the keyword-only option ``expand_user=False``.
+        The main situation where this might be useful is when the definition
+        of your project root contains a user marker, and you want to leave it
+        in the final path.
+
+        >>> path1 = ConfigPath("<projectroot>/a/b", projectroot="~/myproject/")
+        >>> path2 = ConfigPath("c/d")
+        >>> path3 = ConfigPath("~/e/f")
+        >>>
+        >>> path1.expandprojectroot()
+        # /home/john/myproject/a/b
+        >>> path1.expandprojectroot(expand_user=False)
+        # ~/myproject/a/b
+        >>> path2.expandprojectroot()
+        # c/d
+        >>> path3.expandprojectroot()
+        # /home/john/c/d
+        >>> path3.expandprojectroot(expand_user=False)
+        # ~/c/d
         """
         projectroot = projectroot or self.projectroot
         projectrootmarkers = prm if (prm:=projectrootmarkers is not None) else self.__projectroot_markers__
@@ -203,9 +248,14 @@ class ConfigPath(Path):
             self._tail and self._tail[0] in projectrootmarkers):
             if projectroot is None:
                 raise RuntimeError("Must set `projectroot` before attempting to expand project root markers.")
-            drv, root, tail = self._parse_path(os.path.expanduser(self.projectroot))
+            drv, root, tail = self._parse_path(
+                os.path.expanduser(self.projectroot) if expand_user
+                                   else self.projectroot)
             return self._from_parsed_parts(drv, root, tail + self._tail[1:])
-        return self
+        elif expand_user:
+            return self.expanduser()
+        else:
+            return self
 
 # %%
 
@@ -224,7 +274,7 @@ def parse_configpaths(cls, val: None|str|Path|ConfigPath, info: ValidationInfo) 
 
     # Determine anchor_dir and projectroot
     if info.context:
-        assert isinstance(info.context.sourced_data, SourcedChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
+        assert isinstance(info.context.sourced_data, SourcedDeepChainMap), "Context is not a SourceChainMap — This is likely a bug in ValConfig"
         # Retrieve the source from the validation info
         data_val, source = info.context.sourced_data.get_with_source(info.field_name)
         if data_val != str_val:
@@ -285,7 +335,7 @@ def _flatten_annotations(ann):
     # with it and it would probably break something downstream, so we discard it.
 
 class ValConfigContext(NamedTuple):
-    sourced_data: SourcedChainMap
+    sourced_data: SourcedDeepChainMap
     projectroot: Path
 
 class ValConfigMetaclass(type(BaseModel)):
@@ -566,7 +616,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
     def __init__(self, **kwargs):
         if self.__valconfig_initialized__:
-            # config_data = SourcedChainMap()
+            # config_data = SourcedDeepChainMap()
             projectroot = self.__class__.__valconfig_projectroot__
             # TODO: Is there a better way to update multiple fields at once, without validating the whole lot?
             #       (Calling model_validate() or validate_python() would check that `data` is a complete spec, which is not what we want)
@@ -579,7 +629,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
         self.__class__.__valconfig_projectroot__ = projectroot
         data = config_data.new_child(kwargs, source=KWARGS)
 
-        # Merge the nested dictionaries for nested ValConfigs into their own SourcedChainMap()
+        # Merge the nested dictionaries for nested ValConfigs into their own SourcedDeepChainMap()
         cfgs = {}
         for nm, info in self.model_fields.items():
             T = info.annotation
@@ -615,14 +665,14 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     # does not allow the Config object to be instantiated with missing arguments,
     # even if they would be defined in the config files
     @classmethod
-    def load_config_files(cls) -> SourcedChainMap:
+    def load_config_files(cls) -> SourcedDeepChainMap:
         """
         Load default values from the configuration files, and extend `data`
         with them. (Taking care not to overwrite existing fields in `data`.)
         This assumes that `data` is a dictionary.
         """
 
-        config_dicts = SourcedChainMap()  # Stores data from each config file
+        config_dicts = SourcedDeepChainMap()  # Stores data from each config file
         # NB: ChainMap precedence goes left to right
         #     `new_child` adds dictionaries to the left (i.e. gives them higher precedence)
 
@@ -675,7 +725,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
     @model_validator(mode="before")
     @classmethod
-    def replace_default(cls, data: SourcedChainMap, info: ValidationInfo):
+    def replace_default(cls, data: SourcedDeepChainMap, info: ValidationInfo):
         for nm, val in data.items():
             if isinstance(val, str) and val in cls.__default_value_markers__:
                 field = cls.model_fields[nm]
@@ -689,7 +739,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
     @model_validator(mode="before")
     @classmethod
-    def replace_sentinels(cls, data: SourcedChainMap):
+    def replace_sentinels(cls, data: SourcedDeepChainMap):
         """Replace sentinel values by their definition in __setinel_substitutions__
         """
         for nm, val in data.items():

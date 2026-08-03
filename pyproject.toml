@@ -32,6 +32,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic",
+    "deep-chainmap"
     # "addict"     # Only used in contrib.holoviews
 ]
 dynamic = ["version"]
