@@ -4,6 +4,9 @@ from pathlib import Path
 import valconfig
 from pydantic import HttpUrl
 
+# Ensure the directory containing the current file is in Path, so we can load BigProject
+sys.path.insert(0, str(Path(__file__).parent))
+
 def test_usage_example():
     from BigProject import config
 
