@@ -708,7 +708,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                 if p.name == cls.__local_config_filename__:
                     local_paths.append(p)
                     logger.info(f"Appended '{p}' to local config files")
-                if p.name in cls.__projectroot_filenames__:
+                if not projectroot and p.name in cls.__projectroot_filenames__:
                     projectroot = d  # Will terminate while loop
                     logger.info(f"Project root is '{d}'")
             if len(d._tail) == 0 or d == homedir:   # Fallback if there is no .git in the hierarchy and we reach the root or home directory
