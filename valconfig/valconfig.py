@@ -47,6 +47,7 @@ import types
 import typing
 from   typing import Union, ClassVar, Optional, Literal, Any, Annotated, NamedTuple
 from   pathlib import Path
+from   dataclasses import dataclass
 from   warnings import warn
 import tomllib
 
@@ -158,8 +159,17 @@ class SourcedDeepChainMap(SourcedChainMap, DeepChainMap):
 
     then ``D[A][b]`` will fail if ``D`` is a `SourcedChainMap`, but will
     succeed if it is a `SourcedDeepChainMap`.
+
+    Nested mappings are returned as `SourcedDeepChainMap` as well, so that
+    sources remain available within nested sections.
     """
-    pass
+    def __getitem__(self, key):
+        submaps = [(mapping, source) for mapping, source in zip(self.maps, self.sources)
+                   if key in mapping]
+        if submaps and isinstance(submaps[0][0][key], Mapping):
+            return self.__class__(*(m[key] for m, _ in submaps),
+                                  sources=tuple(src for _, src in submaps))
+        return super().__getitem__(key)
 
 
 # %%
@@ -334,7 +344,13 @@ def _flatten_annotations(ann):
     # If `ann` matches none of the above cases, then we don’t know what to do
     # with it and it would probably break something downstream, so we discard it.
 
-class ValConfigContext(NamedTuple):
+@dataclass
+class ValConfigContext:
+    """
+    Validation context passed down to all validators.
+    `sourced_data` always refers to the data of the (possibly nested) config
+    currently being validated; see `ValConfig.set_context_level`.
+    """
     sourced_data: SourcedDeepChainMap
     projectroot: Path
 
@@ -735,8 +751,11 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
                     data[nm] = field.default
                 elif field.default_factory is not None:
                     data[nm] = field.get_default(call_default_factory=True)
+                elif isinstance(data, SourcedChainMap):
+                    # NB: For nested configs, `data` is already restricted to the nested section
+                    data[nm] = data.reversed_get(nm, PydanticUndefined)
                 else:
-                    data[nm] = info.context.sourced_data.reversed_get(nm, PydanticUndefined)
+                    data[nm] = PydanticUndefined  # Plain dict: no lower-precedence values to fall back on
                 if (data[nm] is PydanticUndefined
                       or isinstance(data[nm], str) and data[nm] in cls.__default_value_markers__):
                     raise MissingDefaultError(f"Field {nm} requested to use the default value, but no default value is defined.")
@@ -751,6 +770,25 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             if isinstance(val, str) and val in cls.__sentinel_substitutions__:
                 data[nm] = cls.__sentinel_substitutions__[val]
         return data
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def set_context_level(cls, data, handler, info: ValidationInfo):
+        """
+        When validating a nested config, point the context to the data of
+        that nested config, so that field validators (e.g. `parse_configpaths`)
+        look up sources within the correct section.
+        """
+        ctx = info.context
+        if (not isinstance(ctx, ValConfigContext)
+              or not isinstance(data, SourcedDeepChainMap)
+              or data is ctx.sourced_data):
+            return handler(data)
+        outer_data, ctx.sourced_data = ctx.sourced_data, data
+        try:
+            return handler(data)
+        finally:
+            ctx.sourced_data = outer_data
 
 
 # %%

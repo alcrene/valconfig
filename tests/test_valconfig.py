@@ -56,3 +56,30 @@ def test_default_marker():
         a: int
     with pytest.raises(ValidationError, match="no default value is defined"):
         Config2(a="<DEFAULT>")
+
+def test_nested_context(tmp_path):
+    """Nested sections must look up sources and defaults within their own section."""
+    from typing import ClassVar
+    from pathlib import Path
+    from valconfig.valconfig import ValConfig, SourcedDeepChainMap
+
+    (tmp_path/"sub").mkdir()
+    defaults = {"n": 1, "section": {"n": 7, "data": "rel/data"}}
+    local = {"section": {"n": "<DEFAULT>"}}
+
+    class Config(ValConfig):
+        __default_config_path__: ClassVar = None
+        __local_config_filename__: ClassVar = None
+        n: int
+        class section:
+            n: int
+            data: Path
+        @classmethod
+        def load_config_files(cls):
+            return SourcedDeepChainMap(local, defaults, sources=(tmp_path/"sub"/"local.toml", tmp_path/"defaults.toml")), tmp_path
+
+    config = Config()
+    assert config.n == 1
+    assert config.section.n == 7  # Not the top-level `n`
+    # Relative path is anchored to the directory of the file which defines it
+    assert config.section.data == tmp_path/"rel/data"
