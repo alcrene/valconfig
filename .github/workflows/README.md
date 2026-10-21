@@ -29,7 +29,12 @@ There are different ways to get a package on PyPI. This guidebook assumes or use
     + Once properly configured, this allows publishing literally at the click of a button. (In contrast to e.g. `twine`, which requires issuing commands you probably forgot since the last time.)
 - Separate GitHub workflows for building and publishing.
     + [pypi-publish](https://github.com/marketplace/actions/pypi-publish) action
-    + [dawidd6/action-download-artifact](https://github.com/dawidd6/action-download-artifact) in order to separate build and deployment into separate workflows.
+    + Test builds with the `Build` workflow.
+    + Once the build succeeds and you are confident in the result, trigger the `Publish` workflow.
+      This reuses the `Build` as a [reusable workflow](https://docs.github.com/en/actions/sharing-automations/reusing-workflows), so if the build works on its own, it works here too.
+    + Most new versions don’t require re-testing the build, so you can
+      trigger the `Publish` workflow immediately and have everything done at once.
+      
 
 ## Step-by-step instructions for publishing
 
@@ -40,29 +45,6 @@ There are different ways to get a package on PyPI. This guidebook assumes or use
 - On [TestPyPI](https://test.pypi.org)
 - On [PyPI](https://pypi.org/)
 
-### Create a GitHub Private Access Token
-
-This is needed for the splitting publication into separate "build" and "publish" workflows. The access token is used to allow the publish workflow to read the artifacts from the "build" workflow. See [download-artifact docs](https://github.com/actions/download-artifact?tab=readme-ov-file#download-artifacts-from-other-workflow-runs-or-repositories) and [issue discussion](https://github.com/actions/download-artifact/issues/172#issuecomment-1893955510).
-
-GitHub docs:
-
-- [Configuration personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-- [Using secrets in GitHub actions](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions)
-
-What to do:
-
-- User icon -> Developer settings -> Personal access tokens
-- Fill
-    - Token name: Publish to PyPI - [repository name]
-    - Expiration: 1 year
-    - Description: Allow "publish" GitHub actions to read the artifacts created by "build" actions.
-    - Resource owner: You
-    - Repository access: Only select repositories -> Select [repository]
-    - Permissions
-        - Repository permissions
-            - Actions: Read-only
-- Keep the generated token at hand: you will use it twice below (once for each release environment)
-
 ### Repo configuration
 
 Do this with the GitHub web UI. (These are my personal preferences; adapt as desired.)
@@ -71,33 +53,31 @@ Do this with the GitHub web UI. (These are my personal preferences; adapt as des
     - General
         - Default branch
             - main
-    - Branches
-        - Add a rule for branch `main`
-            - Allow force push
-                - Only admin
-    - Rules
-        - New tag ruleset
+    - Rulesets
+        - Add a *branch ruleset*
+            - Name: "Protected main branch"
+            - Targeting criteria: `main`
+            - Rules:
+                - ☑ Restrict deletions
+        - Add a *tag ruleset*
             - Name: "Protected `v*` tags"
             - Bypass list: Repository admin
             - Target criterion (inclusion): `v*`
             - Rules:
-                - Restrict creations
-                - Restrict deletions
-                - Block force pushes
+                - ☑ Restrict creations
+                - ☑ Restrict updates
+                - ☑ Restrict deletions
+                - ☑ Block force pushes
     - Environments
         - Create 2 environments
             - `release`
                 - Wait timer: 15 minutes[^why-timer]
                     - Double check that the timer has been applied. You may need to click the text box and press Enter.
-                - Deployment branches and tags
-                    - Add deployment branch rule `main`
-                - Add environment secret:
-                    - Name: GH_PAT
-                    - Value: [Access token code]
+                - Deployment branches and tags: "Selected branches and tags"
+                    - Add deployment branch or tag rule: Ref type "Branch", pattern `main`
+                    - Add deployment branch or tag rule: Ref type "Tag", pattern `v*`
+                      (needed because release events run on the tag, not on `main`)
             - `release-testpypi`
-                - Add environment secret:
-                    - Name: GH_PAT
-                    - Value: [Access token code]
 
 [^why-timer]: Once a package is published to PyPI, it cannot be replaced except by publishing a new version with a newer version number. The timer is intended to give you time to realize a mistake and cancel the `release` action before it runs.
 
@@ -119,18 +99,23 @@ Do this with the GitHub web UI. (These are my personal preferences; adapt as des
 - `build.yml`:
     + Will build the distribution files (runs `python3 -m build`)
     + Will run:
-        + when a new release is created with the GitHub UI;
+        + when called by one of the publish workflows;
         + when triggered manually from the *Actions* menu.
 
 - `publish-on-pypi.yml`:
-    + Will place the package on the official PyPI index
+    + Will trigger a new build of the package (by calling `build.yml`).  
+      If that succeeds, a 15-minute timer starts, after which
+      the result of the build is automatically published to the official PyPI index
     + Permanent: Once a package is published with PyPI with a version number, no new packages can be published with the same number.
     + Runs within the environment `release`.
     + Will run:
+        + when a new release (not marked as pre-release) is created with the GitHub UI;
         + when triggered manually from the *Actions* menu.
 
 - `publish-on-testpypi.yml`:
-    + Will place the package on the test PyPI index
+    + Will trigger a new build of the package (by calling `build.yml`).  
+      If that succeeds,
+      the result of the build is automatically published to the test PyPI index
     + The test index can be used
         + to make sure the packaging pipeline works as it should;
         + to share pre-release with others to allow them to test them.
@@ -170,20 +155,10 @@ When you are ready to publish a new release, do the following:
   
 - Push the tag to GitHub
 
-- Make a new release with the GitHub UI. This will automatically trigger the `build.yml` workflow.
-  + Alternatively, if you are not ready to mint a release, you can trigger the `build.yml` action manually.
-
-- Inspect the build output (Actions -> Build Python package -> [latest run])
-  If the build looks OK, proceed to publish on Test PyPI:
-  
-  + Copy the RUN ID of the build workflow (the page you are on right now).
-    It will be in the URL as `https://github.com/.../actions/runs/[RUN ID]`
-  + Open Settings -> Environments -> `release-testpyi`.  
-    Add (or update) the variable `BUILD_RUN_ID` with the value you just copied.
-  + Optionally do the same for the `release` environment.
+- Optionally, trigger the `build.yml` workflow manually to inspect the build output before publishing.
 
 - Manually trigger the `Publish release on TestPyPI` workflow.
-  + Make sure the `BUILD_RUN_ID` environment variable points to the latest build.
+  + This builds the latest tagged commit and uploads it in one run.
 
 - Test as needed.
 
@@ -197,18 +172,9 @@ When you are ready to publish a new release, do the following:
   
 - Push the tag to GitHub
 
-- Make a new release with the GitHub UI. This will automatically trigger the `build.yml` workflow.
-
-- Inspect the build output (Actions -> Build Python package -> [latest run])
-  If the build looks OK, proceed to publish on PyPI:
-  
-  + Copy the RUN ID of the build workflow (the page you are on right now).
-    It will be in the URL as `https://github.com/.../actions/runs/[RUN ID]`
-  + Open Settings -> Environments -> `release`.  
-    Add (or update) the variable `BUILD_RUN_ID` with the value you just copied.
-
-- Manually trigger the `Publish release on PyPI` workflow.
-  + Make sure the `BUILD_RUN_ID` environment variable points to the latest build.
+- Make a new release with the GitHub UI (not marked as pre-release).
+  This automatically triggers the `Publish release on PyPI` workflow, which builds the latest tagged commit and uploads it in one run.
+  + Alternatively, trigger the `Publish release on PyPI` workflow manually.
   + This will wait 15 minutes before starting. If during this window you realize you forgot something, you may cancel the action from the Action menu.
 
 - Your package is now on PyPI !

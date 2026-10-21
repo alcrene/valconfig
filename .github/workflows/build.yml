@@ -6,11 +6,9 @@
 name: Build Python package
 run-name: ${{ github.actor }} is building the Python package
 
-# Workflow will when a new release in the GitHub web UI.
+# Workflow is called by the publish workflows (publish-on-pypi.yml & publish-on-testpypi.yml).
 # It can also be triggered manually: https://docs.github.com/en/actions/using-workflows/manually-running-a-workflow#running-a-workflow
 on:
-  release:
-    types: [released]
   workflow_dispatch:
   workflow_call:
 
