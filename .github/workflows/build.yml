@@ -19,10 +19,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 100
-          fetch-tags: true
+          # Full history includes all tags, which `git describe` needs below.
+          # (Don't use `fetch-tags: true`: it fails when the workflow runs on a tag,
+          #  with "Cannot fetch both <sha> and refs/tags/<tag>".)
+          fetch-depth: 0
 
       # Get the latest commit with a semver tag
       # This allows re-running the build job even after further unclean commits were made:
@@ -45,7 +47,7 @@ jobs:
           git switch --detach "tags/$latesttag"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -64,7 +66,7 @@ jobs:
           --wheel
           --outdir dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-build
           path: dist/
