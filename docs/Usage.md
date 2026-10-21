@@ -268,6 +268,45 @@ Typically a user-local config file is useful for project repositories.
   subprojects. We expect however, that in most cases a single local config
   file to be enough.
 
+### Inspecting the configuration from the command line
+
+With multiple config files in play, it can be useful to see the final values
+and where each one comes from. *ValConfig* provides a small command line
+tool for this, which requires a few extra dependencies:
+
+```bash
+pip install valconfig[cli]
+```
+
+Then, from anywhere within the project:
+
+```bash
+valconfig show
+```
+
+```
+Config: BigProject.config.Config
+Project root: /home/Jane/BigProject
+Config files (highest precedence first):
+  /home/Jane/BigProject/local.toml
+  /home/Jane/BigProject/config/defaults.toml
+
+Option       Type               Value                    Source
+data_source  ConfigPath | None  /shared-data/BigProject  $/local.toml
+use_gpu      bool               True                     $/local.toml
+log_name     Optional[str]      'Jane'                   $/local.toml
+n_units      int                3                        $/config/defaults.toml
+...
+```
+
+The config is discovered by importing `<package>.config`, where `<package>` is
+the project name in `pyproject.toml` (or any top-level package with a `config`
+submodule). The module or object can also be given explicitly, as in
+`valconfig show BigProject.config` or `valconfig show BigProject.config:config`.
+Since local config files are searched for starting from the current directory,
+the values shown are exactly those your code would see if run from that directory.
+Use `--no-sources` and `--no-types` to hide the corresponding columns.
+
 ## Special value substitutions
 
 Config files are typically parsed as text, which leaves it up to the `Config`

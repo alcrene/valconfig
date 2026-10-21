@@ -39,7 +39,11 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 docs = ["sphinx", "myst-parser", "sphinx-book-theme", "sphinx-design"]
-test = ["pytest"]
+test = ["pytest", "click", "rich"]
+cli = ["click", "rich"]
+
+[project.scripts]
+valconfig = "valconfig.cli:main"
 
 [project.urls]
 "Documentation" = "https://validating-config.readthedocs.io/"

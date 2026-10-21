@@ -59,7 +59,7 @@ from deep_chainmap import DeepChainMap
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConfigPath", "ValConfig", "NestedValConfig"]
+__all__ = ["ConfigPath", "ValConfig", "NestedValConfig", "find_projectroot"]
 
 # Module constants
 _config_instances = {}
@@ -119,12 +119,17 @@ class SourcedChainMap(ChainMap):
     def reversed_get(self, key, default=None) -> Any:
         """Retrieve the value with the lowest precedence.
         """
-        for mapping in reversed(self.maps):
+        return self.reversed_get_with_source(key, default)[0]
+    def reversed_get_with_source(self, key, default=None) -> tuple[Any, Any]:
+        """Retrieve both the value with the lowest precedence and its source.
+        If no value is found, return `default` with a source of `None`.
+        """
+        for mapping, source in zip(reversed(self.maps), reversed(self.sources)):
             try:
-                return mapping[key]
+                return mapping[key], source
             except KeyError:
                 pass
-        return default
+        return default, None
 
     @classmethod
     def fromkeys(cls, iterable, *args):
@@ -171,6 +176,45 @@ class SourcedDeepChainMap(SourcedChainMap, DeepChainMap):
                                   sources=tuple(src for _, src in submaps))
         return super().__getitem__(key)
 
+
+# %%
+
+PROJECTROOT_FILENAMES = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})
+
+def find_projectroot(start: Path|None=None,
+                     root_filenames: Iterable[str]=PROJECTROOT_FILENAMES,
+                     local_filename: str|None=None
+                     ) -> tuple[Path|None, list[Path]]:
+    """
+    Walk up the directory tree from `start` (default: the current directory)
+    until a directory containing one of `root_filenames` is found.
+    The search stops without finding a project root if it reaches the
+    filesystem root or the home directory.
+
+    Returns the project root (or None) and the list of files named
+    `local_filename` encountered along the way, from deepest to shallowest
+    (i.e. from highest to lowest precedence).
+    """
+    local_paths = []
+    d = Path.cwd() if start is None else Path(start)
+    projectroot = None
+    try:
+        homedir = Path.home()
+    except RuntimeError:
+        homedir = None
+    while not projectroot:
+        for p in d.iterdir():
+            if local_filename and p.name == local_filename:
+                local_paths.append(p)
+                logger.info(f"Appended '{p}' to local config files")
+            if not projectroot and p.name in root_filenames:
+                projectroot = d  # Will terminate while loop
+                logger.info(f"Project root is '{d}'")
+        if len(d._tail) == 0 or d == homedir:   # Fallback if there is no .git in the hierarchy and we reach the root or home directory
+            logger.info(f"No project root found. `projectroot` is '{projectroot}'")
+            break                               # Break while loop but don’t set 'projectroot'
+        d = d.parent
+    return projectroot, local_paths
 
 # %%
 
@@ -596,10 +640,11 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     """
     __valconfig_initialized__ : ClassVar[bool]     = False
     __valconfig_projectroot__ : ClassVar[Path|None]= None
+    __valconfig_sourced_data__: ClassVar[SourcedDeepChainMap|None] = None  # Data used to initialize the config, with the source of each value
 
     __default_config_path__   : ClassVar[str|None] = "defaults.toml"
     __local_config_filename__ : ClassVar[str|None] = "local.toml"
-    __projectroot_filenames__ : ClassVar[set[str]] = frozenset({".git", ".hg", ".smt", "pyproject.toml", "setup.cfg", "setup.py", "poetry.lock"})  # If one of these files occurs in a directory, stop searching hierarchy
+    __projectroot_filenames__ : ClassVar[set[str]] = PROJECTROOT_FILENAMES  # If one of these files occurs in a directory, stop searching hierarchy
     __default_value_markers__ : ClassVar[set[str]] = frozenset({"<default>", "<DEFAULT>"})
 
     __sentinel_substitutions__   : ClassVar[dict[str,Any]] = {"<None>": None, "<NONE>": None}
@@ -627,6 +672,40 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     @property
     def projectroot(self):
         return self.__valconfig_projectroot__
+
+    def get_source(self, *path: str):
+        """
+        Return the source of the value at `path`, as it was when the config
+        was initialized. For example, ``config.get_source("figures", "width")``.
+
+        The source is either
+        - the `Path` of the config file which set the value;
+        - `KWARGS` if it was passed as a keyword argument to the Config;
+        - `None` if the value is the default defined in the Config class.
+
+        Values modified after initialization (e.g. by assignment) are not tracked.
+        """
+        if not path:
+            raise TypeError("`get_source` requires at least one key.")
+        *sections, name = path
+        model = self
+        data = type(self).__valconfig_sourced_data__
+        for section in sections:
+            model = getattr(model, section)
+            sub = data[section] if data is not None and section in data else None
+            if isinstance(sub, ValConfig):
+                # Nested config which was instantiated separately (source IMPLICIT): it has its own data
+                data = type(sub).__valconfig_sourced_data__
+            elif isinstance(sub, SourcedChainMap):
+                data = sub
+            else:
+                data = None
+        if data is None:
+            return None
+        val, source = data.get_with_source(name)
+        if isinstance(val, str) and val in getattr(type(model), "__default_value_markers__", ()):
+            return type(model)._resolve_default(name, data)[1]
+        return source
 
     ## Initialization ##   # FIXME: What to do with projects that read the local config? Give project name to config?
 
@@ -671,6 +750,9 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
             context=ValConfigContext(sourced_data=data, projectroot=projectroot)
         )
 
+        # Keep the data, so that the source of each value can be queried with `get_source`
+        type(self).__valconfig_sourced_data__ = data
+
         # Mark this class as initialized, so that further instantiations will
         # not try to reload from disk (they will only update with keyword values, if any)
         type(self).__valconfig_initialized__ = True
@@ -712,25 +794,9 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
         # Locate any local configurations:
         # Starting from the current directory, search for config files named 'local.toml'
         # in the hierarchy.
-        local_paths = []
-        d = Path.cwd()
-        projectroot = None
-        try:
-            homedir = Path.home()
-        except RuntimeError:
-            homedir = None
-        while not projectroot:
-            for p in d.iterdir():
-                if p.name == cls.__local_config_filename__:
-                    local_paths.append(p)
-                    logger.info(f"Appended '{p}' to local config files")
-                if not projectroot and p.name in cls.__projectroot_filenames__:
-                    projectroot = d  # Will terminate while loop
-                    logger.info(f"Project root is '{d}'")
-            if len(d._tail) == 0 or d == homedir:   # Fallback if there is no .git in the hierarchy and we reach the root or home directory
-                logger.info(f"No project root found. `projectroot` is '{projectroot}'")
-                break                               # Break while loop but don’t set 'projectroot'
-            d = d.parent
+        projectroot, local_paths = find_projectroot(
+            root_filenames=cls.__projectroot_filenames__,
+            local_filename=cls.__local_config_filename__)
 
         # Now load all the config files, from lowest to highest precedence
         for local_path in reversed(local_paths):
@@ -739,37 +805,63 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
         return config_dicts, projectroot
 
+    @classmethod
+    def _resolve_default(cls, nm: str, data: Mapping) -> tuple[Any, Any]:
+        """
+        Return the value and source which a default marker for field `nm`
+        resolves to: the class default if there is one (with source `None`),
+        otherwise the lowest-precedence value in `data`.
+        Returns `PydanticUndefined` as value if there is no default.
+        """
+        field = cls.model_fields[nm]
+        if field.default is not PydanticUndefined:
+            return field.default, None
+        elif field.default_factory is not None:
+            return field.get_default(call_default_factory=True), None
+        elif isinstance(data, SourcedChainMap):
+            # NB: For nested configs, `data` is already restricted to the nested section
+            return data.reversed_get_with_source(nm, PydanticUndefined)
+        else:
+            return PydanticUndefined, None  # Plain dict: no lower-precedence values to fall back on
+
+    @staticmethod
+    def _writable_copy(data: Mapping) -> Mapping:
+        """
+        Return a version of `data` which validators can modify without
+        changing the original values or their recorded sources.
+        """
+        if isinstance(data, SourcedChainMap):
+            return data.new_child({}, source=None)
+        return dict(data)
+
     @model_validator(mode="before")
     @classmethod
     def replace_default(cls, data: SourcedDeepChainMap, info: ValidationInfo):
+        out = data
         for nm, val in data.items():
-            if isinstance(val, str) and val in cls.__default_value_markers__:
-                field = cls.model_fields.get(nm)
-                if field is None:
-                    continue  # Not a field: leave it for Pydantic to deal with extra values
-                if field.default is not PydanticUndefined:
-                    data[nm] = field.default
-                elif field.default_factory is not None:
-                    data[nm] = field.get_default(call_default_factory=True)
-                elif isinstance(data, SourcedChainMap):
-                    # NB: For nested configs, `data` is already restricted to the nested section
-                    data[nm] = data.reversed_get(nm, PydanticUndefined)
-                else:
-                    data[nm] = PydanticUndefined  # Plain dict: no lower-precedence values to fall back on
-                if (data[nm] is PydanticUndefined
-                      or isinstance(data[nm], str) and data[nm] in cls.__default_value_markers__):
+            if (isinstance(val, str) and val in cls.__default_value_markers__
+                  and nm in cls.model_fields):  # Leave non-fields for Pydantic to deal with extra values
+                default, _ = cls._resolve_default(nm, data)
+                if (default is PydanticUndefined
+                      or isinstance(default, str) and default in cls.__default_value_markers__):
                     raise MissingDefaultError(f"Field {nm} requested to use the default value, but no default value is defined.")
-        return data
+                if out is data:
+                    out = cls._writable_copy(data)
+                out[nm] = default
+        return out
 
     @model_validator(mode="before")
     @classmethod
     def replace_sentinels(cls, data: SourcedDeepChainMap):
         """Replace sentinel values by their definition in __setinel_substitutions__
         """
+        out = data
         for nm, val in data.items():
             if isinstance(val, str) and val in cls.__sentinel_substitutions__:
-                data[nm] = cls.__sentinel_substitutions__[val]
-        return data
+                if out is data:
+                    out = cls._writable_copy(data)
+                out[nm] = cls.__sentinel_substitutions__[val]
+        return out
 
     @model_validator(mode="wrap")
     @classmethod

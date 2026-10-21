@@ -83,3 +83,56 @@ def test_nested_context(tmp_path):
     assert config.section.n == 7  # Not the top-level `n`
     # Relative path is anchored to the directory of the file which defines it
     assert config.section.data == tmp_path/"rel/data"
+
+def test_get_source(tmp_path):
+    from typing import ClassVar, Optional
+    from valconfig.valconfig import ValConfig, NestedValConfig, SourcedDeepChainMap, KWARGS
+
+    defaults_path, local_path = tmp_path/"defaults.toml", tmp_path/"local.toml"
+    defaults = {"a": 1, "b": 2, "c": 3, "label": "<None>",
+                "section": {"x": 10, "y": 20}}
+    local = {"b": 5, "c": "<DEFAULT>",
+             "section": {"y": "<DEFAULT>"}}
+
+    class OtherConfig(NestedValConfig):  # Instantiated separately, as if imported from another package
+        level: int = 0
+    OtherConfig(level=4)
+
+    class Config(ValConfig):
+        __default_config_path__: ClassVar = None
+        __local_config_filename__: ClassVar = None
+        a: int
+        b: int
+        c: int = 0
+        d: int = 7
+        e: int
+        label: Optional[str]
+        other: OtherConfig
+        class section:
+            x: int
+            y: int
+        @classmethod
+        def load_config_files(cls):
+            return SourcedDeepChainMap(local, defaults, sources=(local_path, defaults_path)), tmp_path
+
+    config = Config(e=9)
+    assert config.get_source("a") == defaults_path
+    assert config.get_source("b") == local_path
+    assert config.c == 0 and config.get_source("c") is None          # <DEFAULT> -> class default
+    assert config.get_source("d") is None                              # Class default
+    assert config.get_source("e") is KWARGS
+    assert config.label is None and config.get_source("label") == defaults_path  # Sentinel substitution keeps its source
+    assert config.get_source("section", "x") == defaults_path
+    assert config.section.y == 20 and config.get_source("section", "y") == defaults_path  # <DEFAULT> -> lowest precedence
+    assert config.other.level == 4 and config.get_source("other", "level") is KWARGS  # From OtherConfig's own data
+
+def test_find_projectroot(tmp_path):
+    from valconfig import find_projectroot
+    (tmp_path/"pyproject.toml").touch()
+    (tmp_path/"a"/"b").mkdir(parents=True)
+    (tmp_path/"local.toml").touch()
+    (tmp_path/"a"/"b"/"local.toml").touch()
+    root, local_paths = find_projectroot(tmp_path/"a"/"b", local_filename="local.toml")
+    assert root == tmp_path
+    assert local_paths == [tmp_path/"a"/"b"/"local.toml", tmp_path/"local.toml"]
+    assert find_projectroot(tmp_path/"a", root_filenames={"nothing"})[0] is None
