@@ -728,12 +728,17 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     def replace_default(cls, data: SourcedDeepChainMap, info: ValidationInfo):
         for nm, val in data.items():
             if isinstance(val, str) and val in cls.__default_value_markers__:
-                field = cls.model_fields[nm]
-                if field is not PydanticUndefined:
+                field = cls.model_fields.get(nm)
+                if field is None:
+                    continue  # Not a field: leave it for Pydantic to deal with extra values
+                if field.default is not PydanticUndefined:
                     data[nm] = field.default
+                elif field.default_factory is not None:
+                    data[nm] = field.get_default(call_default_factory=True)
                 else:
-                    data[nm] = info.context.sourced_data.reversed_get(nm)
-                if data[nm] in cls.__default_value_markers__:
+                    data[nm] = info.context.sourced_data.reversed_get(nm, PydanticUndefined)
+                if (data[nm] is PydanticUndefined
+                      or isinstance(data[nm], str) and data[nm] in cls.__default_value_markers__):
                     raise MissingDefaultError(f"Field {nm} requested to use the default value, but no default value is defined.")
         return data
 

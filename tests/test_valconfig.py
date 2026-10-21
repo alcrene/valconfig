@@ -39,3 +39,20 @@ def test_singleton():
     assert config is conf2 is conf3
     assert config.n_units == 10
 
+
+def test_default_marker():
+    from pydantic import Field, ValidationError
+    from valconfig.valconfig import NestedValConfig  # Doesn't search for config files
+
+    class Config1(NestedValConfig):
+        a: int = 3
+        b: list[int] = Field(default_factory=lambda: [1, 2])
+    config1 = Config1(a="<DEFAULT>", b="<DEFAULT>")
+    assert config1.a == 3
+    assert config1.b == [1, 2]
+
+    # No default anywhere => error
+    class Config2(NestedValConfig):
+        a: int
+    with pytest.raises(ValidationError, match="no default value is defined"):
+        Config2(a="<DEFAULT>")
