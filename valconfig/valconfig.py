@@ -606,7 +606,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
     ## Interface ##
     def __dir__(self):
         """Return the model fields and non-private class attributes."""
-        return sorted(self.model_fields.keys() | {attr for attr in type(self).__dict__ if not attr.startswith("_")})
+        return sorted(type(self).model_fields.keys() | {attr for attr in type(self).__dict__ if not attr.startswith("_")})
 
     @property
     def projectroot(self):
@@ -631,7 +631,7 @@ class ValConfig(BaseModel, metaclass=ValConfigMetaclass):
 
         # Merge the nested dictionaries for nested ValConfigs into their own SourcedDeepChainMap()
         cfgs = {}
-        for nm, info in self.model_fields.items():
+        for nm, info in type(self).model_fields.items():
             T = info.annotation
             if not info.is_required(): continue
             if not isinstance(T, type) or not issubclass(T, ValConfig): continue
