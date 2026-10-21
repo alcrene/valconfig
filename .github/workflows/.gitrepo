@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:alcrene/publish-to-pypi.git
 	branch = main
-	commit = e10c6a2bb4ad3fe2dd2d7068ae274fd7ce4f15b8
-	parent = bda9128e8dd1e195d278674d46280088f9844077
+	commit = fe1b0eba8381afcb0ae75dfe00b60f326aa458ef
+	parent = dfffca2661be9d7962b83587fc4d526923b323b9
 	method = merge
 	cmdver = 0.4.9
