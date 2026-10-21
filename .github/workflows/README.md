@@ -146,7 +146,7 @@ If you intend to use TestPyPI, you need to repeat the procedure there
 When you are ready to publish a new release, do the following:
 (The procedure is the same for the first or subsequent releases.)
 
-- Tag the latest commit with an RC version number: `v0.1.0-rc.1`
+- Tag the latest commit with an RC version number such as `v0.1.0-rc.1`
   + Make sure to use a [SemVer](https://semver.org/) so that build tools recognize the version number.
   + The GitHub actions will always build and publish the latest commit with a SemVer tag.
   + Versions prefixed with `v` is the most common standard, and some tools may expect it.
@@ -164,7 +164,7 @@ When you are ready to publish a new release, do the following:
 
 ### Publish a new official version on PyPI
 
-- Tag the latest commit with plain version number: `v0.1.0`
+- Tag the latest commit with plain version number such as `v0.1.0`
   + Make sure to use a [SemVer](https://semver.org/) so that build tools recognize the version number.
   + This *must* be the latest commit with a SemVer tag.
   + This *may* be the same commit as the latest RC version (and probably should), so the commit will have both an RC version tag and a non-RC version tag.
