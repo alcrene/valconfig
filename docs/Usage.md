@@ -270,9 +270,8 @@ Typically a user-local config file is useful for project repositories.
 
 ### Inspecting the configuration from the command line
 
-With multiple config files in play, it can be useful to see the final values
-and where each one comes from. *ValConfig* provides a small command line
-tool for this, which requires a few extra dependencies:
+It is often useful to be able to inspect configuration values directly from the command line.
+ *ValConfig* provides a small utility for this, which requires a few extra dependencies:
 
 ```bash
 pip install valconfig[cli]
@@ -283,6 +282,8 @@ Then, from anywhere within the project:
 ```bash
 valconfig show
 ```
+
+will print something like
 
 ```
 Config: BigProject.config.Config
@@ -299,13 +300,22 @@ n_units      int                3                        $/config/defaults.toml
 ...
 ```
 
-The config is discovered by importing `<package>.config`, where `<package>` is
-the project name in `pyproject.toml` (or any top-level package with a `config`
-submodule). The module or object can also be given explicitly, as in
-`valconfig show BigProject.config` or `valconfig show BigProject.config:config`.
+As explained in previous sections, options can come from multiple sources—project defaults,
+subpackage defaults, local overrides—and are merged with precedence rules.
+The `Source` shows at a glance from which source each option ultimately comes from.
+
+The config is discovered by importing `<package>.config`, where `<package>` is the
+project name in `pyproject.toml` (or any top-level package with a `config` submodule).
+The module or object can also be given explicitly, as in `valconfig show BigProject.config`.[^config-attr]
+
 Since local config files are searched for starting from the current directory,
 the values shown are exactly those your code would see if run from that directory.
+
 Use `--no-sources` and `--no-types` to hide the corresponding columns.
+
+[^config-attr]: This relies on your `ValConfig` instance following our convention and being named `config`.
+If it has a different name than `config`, specify it after a colon;
+e.g. if it is called `myconfig`, use `valconfig show BigProject.config:myconfig`. 
 
 ## Special value substitutions
 
