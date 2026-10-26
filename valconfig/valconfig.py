@@ -210,7 +210,7 @@ def find_projectroot(start: Path|None=None,
             if not projectroot and p.name in root_filenames:
                 projectroot = d  # Will terminate while loop
                 logger.info(f"Project root is '{d}'")
-        if len(d._tail) == 0 or d == homedir:   # Fallback if there is no .git in the hierarchy and we reach the root or home directory
+        if d.parent == d or d == homedir:       # Fallback if there is no .git in the hierarchy and we reach the root or home directory
             logger.info(f"No project root found. `projectroot` is '{projectroot}'")
             break                               # Break while loop but don’t set 'projectroot'
         d = d.parent
@@ -256,11 +256,10 @@ class ConfigPath(Path):
         # (the logic here is the same as in expandprojectroot)
         if (not (path.drive or path.root)                   # Probably not absolute
             and anchor_dir                                  # `anchor_dir` is not None
-            and path._tail and (path._tail[0][:1] != "~"    # Not rel. to home dir
-                                and path._tail[0] != "."    # Not rel. to CWD
-                                and path._tail[0] not in self.__projectroot_markers__)):  # Not rel. to project root => Definitely not absolute
-            drv, root, tail = self._parse_path(anchor_dir)
-            pathsegments = (drv, root, *tail, *pathsegments)
+            and path.parts and (path.parts[0][:1] != "~"    # Not rel. to home dir
+                                and path.parts[0] != "."    # Not rel. to CWD
+                                and path.parts[0] not in self.__projectroot_markers__)):  # Not rel. to project root => Definitely not absolute
+            pathsegments = (anchor_dir, *pathsegments)
         super().__init__(*pathsegments)
 
     def with_segments(self, *pathsegments):
@@ -299,13 +298,13 @@ class ConfigPath(Path):
         projectrootmarkers = prm if (prm:=projectrootmarkers is not None) else self.__projectroot_markers__
         # (Implementation is exactly analogous to expanduser()
         if (not (self.drive or self.root) and
-            self._tail and self._tail[0] in projectrootmarkers):
+            self.parts and self.parts[0] in projectrootmarkers):
             if projectroot is None:
                 raise RuntimeError("Must set `projectroot` before attempting to expand project root markers.")
-            drv, root, tail = self._parse_path(
+            return self.with_segments(
                 os.path.expanduser(self.projectroot) if expand_user
-                                   else self.projectroot)
-            return self._from_parsed_parts(drv, root, tail + self._tail[1:])
+                                   else self.projectroot,
+                *self.parts[1:])
         elif expand_user:
             return self.expanduser()
         else:
