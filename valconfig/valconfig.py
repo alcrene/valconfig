@@ -383,8 +383,13 @@ def _flatten_annotations(ann):
         should be manageable.
     """
     # In addition to types, catch Iterable objects we don’t actually want to iterate into
-    if isinstance(ann, (type, str, types.GenericAlias, typing._GenericAlias)):
+    if isinstance(ann, (type, str)):
         yield ann
+    elif isinstance(ann, (types.GenericAlias, typing._GenericAlias)):
+        # Yield both the generic itself and its arguments, e.g. `list[Item]` and `Item`
+        yield ann
+        for a in ann.__args__:
+            yield from _flatten_annotations(a)
     elif isinstance(ann, Iterable):
         for a in ann:
             yield from _flatten_annotations(a)
@@ -415,6 +420,28 @@ def _pop_namespace_annotations(namespace: dict) -> dict:
             return annotationlib.call_annotate_function(annotate, annotationlib.Format.FORWARDREF)
     # Exit path for Python ⩽ 3.13, or any module with `from __future__ …`: in the latter case, `annotate` will be None
     return namespace.pop("__annotations__", {})
+
+def _evaluate_str_annotation(ann, namespace: dict):
+    """
+    Evaluate an annotation given as a string, like "Optional[Path]", in the
+    module where the class is defined. This is the case for all annotations
+    in modules with `from __future__ import annotations`.
+    Names are resolved in the module globals and the class namespace; names local
+    to a function which defines the class are not available.
+    If evaluation fails (e.g. because of a forward reference), the string is returned.
+    """
+    module = sys.modules.get(namespace.get("__module__"))
+    globalns = getattr(module, "__dict__", {})
+    # Up to two levels: an explicitly quoted annotation in a module with
+    # `from __future__ import annotations` is quoted twice
+    for _ in range(2):
+        if not isinstance(ann, str):
+            break
+        try:
+            ann = eval(ann, globalns, namespace)
+        except Exception:
+            break
+    return ann
 
 @dataclass
 class ValConfigContext:
@@ -461,14 +488,16 @@ class ValConfigMetaclass(type(BaseModel)):
         """
         namespace = dict(namespace)  # Don’t modify the namespace we were given
         annotations = OrderedDict(_pop_namespace_annotations(namespace))
-        annotation_types = {nm: set(_flatten_annotations(ann)) for nm, ann in annotations.items()}
+        annotation_types = {nm: set(_flatten_annotations(_evaluate_str_annotation(ann, namespace)))
+                            for nm, ann in annotations.items()}
         config_paths_to_validate = []
         # Iterate through annotations, looking for annotations `Path` and `Optional[Path]`
         for name, T in annotations.items():
-            if T in {Path, "Path"}:
+            T = _evaluate_str_annotation(T, namespace)
+            if T in (Path, "Path"):   # NB: Evaluated annotations may not be hashable
                 annotations[name] = ConfigPath
                 config_paths_to_validate.append(name)
-            elif T in {Optional[Path], Optional["Path"]}:
+            elif T in (Optional[Path], Optional["Path"]):
                 annotations[name] = ConfigPath | None
                 config_paths_to_validate.append(name)
         # Add the required validator for those paths

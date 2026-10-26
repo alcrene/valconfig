@@ -1,6 +1,7 @@
 import sys
 import pytest
 from pathlib import Path
+from typing import Optional
 import valconfig
 from pydantic import HttpUrl
 
@@ -75,17 +76,19 @@ def test_class_valued_attribute():
 
 def test_path_annotations():
     """`Path` and `Optional[Path]` annotations are converted to `ConfigPath`, including in nested sections."""
-    from typing import Optional
+    # NB: String annotations are evaluated in the module globals, so `Optional` is imported at the top
     from valconfig.valconfig import NestedValConfig, ConfigPath
 
     class Config(NestedValConfig):
         p: Path = Path("a")
         q: Optional[Path] = None
+        s: "Optional[Path]" = None   # Explicit string annotation
         class section:
             r: Path = Path("b")
 
     assert Config.model_fields["p"].annotation is ConfigPath
     assert Config.model_fields["q"].annotation == ConfigPath | None
+    assert Config.model_fields["s"].annotation == ConfigPath | None
     assert Config.sectionType.model_fields["r"].annotation is ConfigPath
     config = Config(q="c")
     assert type(config.p) is type(config.q) is type(config.section.r) is ConfigPath
@@ -114,12 +117,39 @@ def test_future_annotations():
     assert config.section.n == 5
     assert type(config.p) is type(config.section.r) is ConfigPath
 
-@pytest.mark.xfail(strict=True, reason="Only bare 'Path' string annotations are recognized, not 'Optional[Path]'")
-def test_future_annotations_optional_path():
+def test_future_annotations_path_spellings():
+    """With `from __future__ import annotations`, all spellings of an optional Path are recognized."""
     from valconfig.valconfig import ConfigPath
     from future_annotations_config import Config
 
-    assert Config.model_fields["q"].annotation == ConfigPath | None
+    for nm in ["q", "s", "t", "v"]:
+        assert Config.model_fields[nm].annotation == ConfigPath | None, nm
+    assert Config.model_fields["u"].annotation is ConfigPath
+    assert Config.model_fields["n"].metadata  # Non-Path annotations are left to Pydantic
+    config = Config(q="q", s="s", t="t")
+    assert all(type(getattr(config, nm)) is ConfigPath for nm in ["q", "s", "t", "u"])
+
+def test_nested_types_in_annotations():
+    """Nested classes used in annotations (possibly inside generics) are types, not sections."""
+    from pydantic import BaseModel
+    from valconfig.valconfig import NestedValConfig
+    from future_annotations_config import TypedNested as FutureConfig
+
+    class Config(NestedValConfig):
+        class Sub(BaseModel):
+            x: int = 0
+        class Item(BaseModel):
+            x: int = 0
+        sub: Sub
+        opt: Optional[Sub] = None
+        items: list[Item] = []
+        class section:
+            n: int = 1
+
+    for cls in (Config, FutureConfig):  # Without and with `from __future__ import annotations`
+        assert set(cls.model_fields) == {"sub", "opt", "items", "section"}, cls.__module__
+        config = cls(sub={"x": 1}, items=[{"x": 2}])
+        assert config.sub.x == 1 and config.items[0].x == 2 and config.section.n == 1
 
 def test_nested_context(tmp_path):
     """Nested sections must look up sources and defaults within their own section."""
