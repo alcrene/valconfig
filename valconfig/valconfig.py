@@ -388,6 +388,28 @@ def _flatten_annotations(ann):
     # If `ann` matches none of the above cases, then we don’t know what to do
     # with it and it would probably break something downstream, so we discard it.
 
+def _pop_namespace_annotations(namespace: dict) -> dict:
+    """
+    Remove and return the annotations from a class namespace, before the class is created.
+    Starting with Python 3.14 (PEP 649), annotations are evaluated lazily: the namespace
+    contains an annotate function instead of an `__annotations__` dict.
+    (Unless the module uses `from __future__ import annotations`, in which case we still
+    get an `__annotations__` dict of strings.)
+    Names which cannot be resolved yet are returned as forward references.
+    """
+    if sys.version_info >= (3, 14):
+        import annotationlib
+        annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+        # Remove the annotate function, so it can’t return the original, unmodified annotations
+        namespace.pop("__annotate_func__", None)
+        namespace.pop("__annotate__", None)
+        if annotate is not None:
+            # The normal Python ⩾ 3.14 exit
+            namespace.pop("__annotations__", None)
+            return annotationlib.call_annotate_function(annotate, annotationlib.Format.FORWARDREF)
+    # Exit path for Python ⩽ 3.13, or any module with `from __future__ …`: in the latter case, `annotate` will be None
+    return namespace.pop("__annotations__", {})
+
 @dataclass
 class ValConfigContext:
     """
@@ -431,7 +453,8 @@ class ValConfigMetaclass(type(BaseModel)):
                     ...
 
         """
-        annotations = OrderedDict(namespace.get("__annotations__", {}))
+        namespace = dict(namespace)  # Don’t modify the namespace we were given
+        annotations = OrderedDict(_pop_namespace_annotations(namespace))
         annotation_types = {nm: set(_flatten_annotations(ann)) for nm, ann in annotations.items()}
         config_paths_to_validate = []
         # Iterate through annotations, looking for annotations `Path` and `Optional[Path]`
