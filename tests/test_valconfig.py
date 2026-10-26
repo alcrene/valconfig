@@ -73,6 +73,38 @@ def test_class_valued_attribute():
     assert set(Config.model_fields) == {"n", "section"}  # Bare nested classes are still converted
     assert Config().section.m == 2
 
+
+def test_forward_reference():
+    """Annotations may refer to types which are only defined after the config class."""
+    from valconfig.valconfig import NestedValConfig
+
+    class Config(NestedValConfig):
+        later: "Later"
+    class Later(NestedValConfig):
+        x: int = 0
+    Config.model_rebuild()
+
+    assert Config(later={"x": 2}).later.x == 2
+
+def test_future_annotations():
+    """With `from __future__ import annotations`, annotations are strings: they must be handled the same way."""
+    from valconfig.valconfig import ConfigPath
+    from future_annotations_config import Config
+
+    assert Config.model_fields["p"].annotation is ConfigPath
+    assert Config.sectionType.model_fields["r"].annotation is ConfigPath
+    config = Config(later={"x": 2}, section={"n": 5})
+    assert config.later.x == 2
+    assert config.section.n == 5
+    assert type(config.p) is type(config.section.r) is ConfigPath
+
+@pytest.mark.xfail(strict=True, reason="Only bare 'Path' string annotations are recognized, not 'Optional[Path]'")
+def test_future_annotations_optional_path():
+    from valconfig.valconfig import ConfigPath
+    from future_annotations_config import Config
+
+    assert Config.model_fields["q"].annotation == ConfigPath | None
+
 def test_nested_context(tmp_path):
     """Nested sections must look up sources and defaults within their own section."""
     from typing import ClassVar
