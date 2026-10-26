@@ -200,3 +200,51 @@ def test_find_projectroot(tmp_path):
     assert root == tmp_path
     assert local_paths == [tmp_path/"a"/"b"/"local.toml", tmp_path/"local.toml"]
     assert find_projectroot(tmp_path/"a", root_filenames={"nothing"})[0] is None
+
+def test_configpath_anchors():
+    """Relative paths are anchored to `anchor_dir`, except those starting with './', '~' or a project root marker."""
+    from valconfig.valconfig import ConfigPath
+
+    assert ConfigPath("a/b", anchor_dir="/cfg") == Path("/cfg/a/b")
+    assert ConfigPath("./a/b", anchor_dir="/cfg") == Path("a/b")   # Relative to CWD
+    assert ConfigPath(".", anchor_dir="/cfg") == Path(".")
+    assert ConfigPath("~/a", anchor_dir="/cfg") == Path("~/a")
+    assert ConfigPath("$/a", anchor_dir="/cfg") == Path("$/a")
+    assert ConfigPath("<PROJECTROOT>/a", anchor_dir="/cfg") == Path("<PROJECTROOT>/a")
+    assert ConfigPath("/abs/a", anchor_dir="/cfg") == Path("/abs/a")
+    assert ConfigPath("a/b") == Path("a/b")
+
+def test_configpath_relative_to_cwd(tmp_path):
+    """In a config file, a path starting with './' is relative to the current directory, not to the file."""
+    from typing import ClassVar
+    from valconfig.valconfig import ValConfig, SourcedDeepChainMap
+
+    local = {"to_file": "rel/data", "to_cwd": "./rel/data"}
+
+    class Config(ValConfig):
+        __default_config_path__: ClassVar = None
+        __local_config_filename__: ClassVar = None
+        to_file: Path
+        to_cwd: Path
+        @classmethod
+        def load_config_files(cls):
+            return SourcedDeepChainMap(local, sources=(tmp_path/"local.toml",)), tmp_path
+
+    config = Config()
+    assert config.to_file == tmp_path/"rel/data"
+    assert config.to_cwd == Path("rel/data")
+
+def test_expandprojectroot_arguments():
+    """The `projectroot` and `projectrootmarkers` arguments override the path’s own values."""
+    from valconfig.valconfig import ConfigPath
+
+    path = ConfigPath("$/a", projectroot="/proj")
+    assert path.expandprojectroot() == Path("/proj/a")
+    assert path.expandprojectroot(projectroot="/other") == Path("/other/a")
+    assert ConfigPath("$/a").expandprojectroot(projectroot="/proj") == Path("/proj/a")
+
+    path = ConfigPath("@root/a", projectroot="/proj")
+    assert path.expandprojectroot(projectrootmarkers={"@root"}) == Path("/proj/a")
+    assert path.expandprojectroot() == Path("@root/a")   # Not a default marker
+    # Overriding the markers replaces the defaults
+    assert ConfigPath("$/a", projectroot="/proj").expandprojectroot(projectrootmarkers={"@root"}) == Path("$/a")

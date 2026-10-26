@@ -250,14 +250,17 @@ class ConfigPath(Path):
     def __init__(self, *pathsegments, anchor_dir=None, projectroot=None):
         self.projectroot = projectroot
         path = Path(*pathsegments)
+        # Path normalization drops a leading "./", so we check the original string to detect paths relative to CWD
+        first_segment = os.fspath(pathsegments[0]) if pathsegments else ""
+        rel_to_cwd = first_segment.startswith(("./", "." + os.sep))
         # Prepend the anchor_dir, but only if the path is not absolute
         # (NB: We don’t use `is_absolute()` here because we want "~/path" and "<PROJECTROOT>/path" to be considered as absolute)
         # Starting with a user '~' or projectroot marker counts as absolute
         # (the logic here is the same as in expandprojectroot)
         if (not (path.drive or path.root)                   # Probably not absolute
             and anchor_dir                                  # `anchor_dir` is not None
+            and not rel_to_cwd                              # Not rel. to CWD
             and path.parts and (path.parts[0][:1] != "~"    # Not rel. to home dir
-                                and path.parts[0] != "."    # Not rel. to CWD
                                 and path.parts[0] not in self.__projectroot_markers__)):  # Not rel. to project root => Definitely not absolute
             pathsegments = (anchor_dir, *pathsegments)
         super().__init__(*pathsegments)
@@ -293,17 +296,21 @@ class ConfigPath(Path):
         # /home/john/c/d
         >>> path3.expandprojectroot(expand_user=False)
         # ~/c/d
+
+        Both the project root and the set of recognized markers can be overridden
+        for a single call with the arguments `projectroot` and `projectrootmarkers`.
         """
         projectroot = projectroot or self.projectroot
-        projectrootmarkers = prm if (prm:=projectrootmarkers is not None) else self.__projectroot_markers__
+        if projectrootmarkers is None:
+            projectrootmarkers = self.__projectroot_markers__
         # (Implementation is exactly analogous to expanduser()
         if (not (self.drive or self.root) and
             self.parts and self.parts[0] in projectrootmarkers):
             if projectroot is None:
                 raise RuntimeError("Must set `projectroot` before attempting to expand project root markers.")
             return self.with_segments(
-                os.path.expanduser(self.projectroot) if expand_user
-                                   else self.projectroot,
+                os.path.expanduser(projectroot) if expand_user
+                                   else projectroot,
                 *self.parts[1:])
         elif expand_user:
             return self.expanduser()
