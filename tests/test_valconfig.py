@@ -4,9 +4,6 @@ from pathlib import Path
 import valconfig
 from pydantic import HttpUrl
 
-# Ensure the directory containing the current file is in Path, so we can load BigProject
-sys.path.insert(0, str(Path(__file__).parent))
-
 def test_usage_example():
     from BigProject import config
 
@@ -30,8 +27,10 @@ def test_usage_example():
 
 # test_usage_example()
 
-def test_singleton():
+def test_singleton(monkeypatch):
     from BigProject.config import config, Config
+    # Config is a session-wide singleton: restore `n_units` afterwards so other tests see the default
+    monkeypatch.setattr(config, "n_units", config.n_units)
 
     conf2 = Config()
     conf3 = Config(n_units=10)
