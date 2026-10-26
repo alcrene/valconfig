@@ -1,5 +1,9 @@
 # Validating config
 
+[![Tests](https://github.com/alcrene/valconfig/actions/workflows/tests.yml/badge.svg)](https://github.com/alcrene/valconfig/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/valconfig)](https://pypi.org/project/valconfig/)
+[![Python versions](https://img.shields.io/pypi/pyversions/valconfig)](https://pypi.org/project/valconfig/)
+
 Simple, extendable configuration objects
 
 ## Quick start
@@ -13,7 +17,18 @@ As a *package*:
   ```
 
 Or as *inlined source*:
-- Copy the `valconfig.py` file into your project and install [Pydantic](https://pydantic-docs.helpmanual.io/).
+- Copy the `valconfig.py` file into your project and install both [Pydantic](https://pydantic-docs.helpmanual.io/) and [deep-chainmap](https://pypi.org/project/deep-chainmap/).
+
+### Compatibility
+
+The package is tested on the following versions (a dash means the combination is not tested, but is expected to work):
+
+|                      | Python 3.11 | 3.12 | 3.13 | 3.14 | 3.15 |
+|----------------------|:-----------:|:----:|:----:|:----:|:----:|
+| **Linux**            | ✅          | ✅   | ✅   | ✅   | ✅   |
+| **macOS**            | ✅          | –    | –    | –    | ✅   |
+| **Windows**          | ✅          | –    | –    | –    | ✅   |
+| **Minimum Pydantic** | 2.6         | 2.6  | 2.8  | 2.12 | 2.13 |
 
 ### Example usage
 
