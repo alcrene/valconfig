@@ -6,6 +6,17 @@
 
 Simple, extendable configuration objects
 
+| Tested[^dash]        | Python 3.11 | 3.12 | 3.13 | 3.14 | 3.15 |
+|----------------------|:-----------:|:----:|:----:|:----:|:----:|
+| **Linux**            | ✅          | ✅   | ✅   | ✅   | ✅   |
+| **macOS**            | ✅          | –    | –    | –    | ✅   |
+| **Windows**          | ✅          | –    | –    | –    | ✅   |
+| **Minimum Pydantic** | 2.6         | 2.6  | 2.8  | 2.12 | 2.13 |
+
+[^dash]: A dash in the compatibility table means the combination is not tested, but is expected to work.
+Linux versions are tested both with the indicated minimal version of Pydantic, and the current latest.
+macOS & Windows are tested with the latest Pydantic version.
+
 ## Quick start
 
 ### Installation
@@ -18,17 +29,6 @@ As a *package*:
 
 Or as *inlined source*:
 - Copy the `valconfig.py` file into your project and install both [Pydantic](https://pydantic-docs.helpmanual.io/) and [deep-chainmap](https://pypi.org/project/deep-chainmap/).
-
-### Compatibility
-
-The package is tested on the following versions (a dash means the combination is not tested, but is expected to work):
-
-|                      | Python 3.11 | 3.12 | 3.13 | 3.14 | 3.15 |
-|----------------------|:-----------:|:----:|:----:|:----:|:----:|
-| **Linux**            | ✅          | ✅   | ✅   | ✅   | ✅   |
-| **macOS**            | ✅          | –    | –    | –    | ✅   |
-| **Windows**          | ✅          | –    | –    | –    | ✅   |
-| **Minimum Pydantic** | 2.6         | 2.6  | 2.8  | 2.12 | 2.13 |
 
 ### Example usage
 
