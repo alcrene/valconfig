@@ -73,6 +73,22 @@ def test_class_valued_attribute():
     assert set(Config.model_fields) == {"n", "section"}  # Bare nested classes are still converted
     assert Config().section.m == 2
 
+def test_path_annotations():
+    """`Path` and `Optional[Path]` annotations are converted to `ConfigPath`, including in nested sections."""
+    from typing import Optional
+    from valconfig.valconfig import NestedValConfig, ConfigPath
+
+    class Config(NestedValConfig):
+        p: Path = Path("a")
+        q: Optional[Path] = None
+        class section:
+            r: Path = Path("b")
+
+    assert Config.model_fields["p"].annotation is ConfigPath
+    assert Config.model_fields["q"].annotation == ConfigPath | None
+    assert Config.sectionType.model_fields["r"].annotation is ConfigPath
+    config = Config(q="c")
+    assert type(config.p) is type(config.q) is type(config.section.r) is ConfigPath
 
 def test_forward_reference():
     """Annotations may refer to types which are only defined after the config class."""
