@@ -505,7 +505,8 @@ class ValConfigMetaclass(type(BaseModel)):
         for nm, T in namespace.items():
             # If `T` is not a nested type, skip
             # Also, if it is a declared type, don't touch it or its name, and don't create an associated attribute
-            if not nm in nested_classes or T in all_annotation_types | attribute_types:
+            # Likewise if the name is annotated: then it is an attribute whose value is a class (e.g. `container: ClassVar[type] = dict`)
+            if not nm in nested_classes or nm in annotations or T in all_annotation_types | attribute_types:
                 new_namespace[nm] = T
                 continue
             # Otherwise, append `Type` to the name, to free the name itself for an annotation

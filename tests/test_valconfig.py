@@ -56,6 +56,23 @@ def test_default_marker():
     with pytest.raises(ValidationError, match="no default value is defined"):
         Config2(a="<DEFAULT>")
 
+def test_class_valued_attribute():
+    """An annotated attribute whose value is a class must not be converted into a nested config."""
+    from typing import ClassVar
+    from valconfig.valconfig import NestedValConfig
+
+    class Config(NestedValConfig):
+        n: int = 1
+        container: ClassVar[type] = dict
+        sequence: ClassVar[type] = list
+        class section:
+            m: int = 2
+
+    assert Config.container is dict
+    assert Config.sequence is list
+    assert set(Config.model_fields) == {"n", "section"}  # Bare nested classes are still converted
+    assert Config().section.m == 2
+
 def test_nested_context(tmp_path):
     """Nested sections must look up sources and defaults within their own section."""
     from typing import ClassVar
