@@ -278,3 +278,33 @@ def test_expandprojectroot_arguments():
     assert path.expandprojectroot() == Path("@root/a")   # Not a default marker
     # Overriding the markers replaces the defaults
     assert ConfigPath("$/a", projectroot="/proj").expandprojectroot(projectrootmarkers={"@root"}) == Path("$/a")
+
+def test_configpath_derived_paths(tmp_path):
+    """Every path derived from a ConfigPath is a ConfigPath with the same project root.
+    (On Python < 3.12, this relies on the backport in `valconfig._pathlib_compat`.)"""
+    import pickle
+    from valconfig.valconfig import ConfigPath
+
+    (tmp_path/"sub").mkdir()
+    (tmp_path/"sub"/"f.txt").touch()
+    path = ConfigPath(tmp_path/"sub", projectroot="/proj")
+    rel = ConfigPath("a/b.txt", projectroot="/proj")
+    derived = {
+        "truediv": path / "f.txt", "rtruediv": "/x" / rel, "joinpath": path.joinpath("a", "b"),
+        "parent": path.parent, "parents[0]": path.parents[0], "parents[-1]": path.parents[-1],
+        "with_name": rel.with_name("c"), "with_suffix": rel.with_suffix(".md"), "with_stem": rel.with_stem("c"),
+        "relative_to": path.relative_to(tmp_path), "absolute": rel.absolute(), "resolve": rel.resolve(),
+        "expanduser": ConfigPath("~/a", projectroot="/proj").expanduser(),
+        "iterdir": next(path.iterdir()), "glob": next(path.glob("*.txt")),
+        "expandprojectroot": ConfigPath("$/a", projectroot="/proj").expandprojectroot(),
+    }
+    for name, p in derived.items():
+        assert type(p) is ConfigPath, name
+        assert p.projectroot == "/proj", name
+
+    assert isinstance(path, Path)
+    assert path == Path(tmp_path/"sub") and hash(path) == hash(Path(tmp_path/"sub"))
+    assert str(rel) == "a/b.txt" and rel.parts == ("a", "b.txt")
+    assert list(path.parents) == list(Path(tmp_path/"sub").parents)
+    assert type(ConfigPath.cwd()) is ConfigPath
+    assert pickle.loads(pickle.dumps(rel)) == rel

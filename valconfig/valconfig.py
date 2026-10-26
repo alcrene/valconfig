@@ -57,6 +57,12 @@ from pydantic.main import PydanticUndefined
 
 from deep_chainmap import DeepChainMap
 
+# To support Python 3.11, we import a custom compatibility module; on 3.12 `Path === PathBase`
+try:
+    from ._pathlib_compat import PathBase
+except ImportError:  # Inlined source: modules copied without the package
+    from pathlib import Path as PathBase   # For simplicity, only support ⩾3.12 with inlined sources
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["ConfigPath", "ValConfig", "NestedValConfig", "find_projectroot"]
@@ -218,7 +224,7 @@ def find_projectroot(start: Path|None=None,
 
 # %%
 
-class ConfigPath(Path):
+class ConfigPath(PathBase):
     """
     The purpose of `ConfigPath` is to allow resolving paths relative to different anchors.
     
