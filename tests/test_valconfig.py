@@ -24,7 +24,7 @@ def test_usage_example():
     assert config.default_data_source.expandprojectroot().resolve() == default_root/"wordlist.txt"
     assert config.out_dir.expandprojectroot().resolve()             == project_root/"output.dat"
     assert config.err_dump_path.expandprojectroot().resolve()       == project_root
-    assert config.tmp_dir.expandprojectroot().resolve()             == Path("/tmp")
+    assert config.tmp_dir.expandprojectroot().resolve()             == Path("/tmp").resolve()  # On macOS, /tmp -> /private/tmp
 
 # test_usage_example()
 
@@ -304,7 +304,7 @@ def test_configpath_derived_paths(tmp_path):
 
     assert isinstance(path, Path)
     assert path == Path(tmp_path/"sub") and hash(path) == hash(Path(tmp_path/"sub"))
-    assert str(rel) == "a/b.txt" and rel.parts == ("a", "b.txt")
+    assert rel.as_posix() == "a/b.txt" and rel.parts == ("a", "b.txt")
     assert list(path.parents) == list(Path(tmp_path/"sub").parents)
     assert type(ConfigPath.cwd()) is ConfigPath
     assert pickle.loads(pickle.dumps(rel)) == rel
